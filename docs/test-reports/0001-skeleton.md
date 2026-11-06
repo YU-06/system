@@ -35,6 +35,14 @@ Windows；.NET SDK 10.0.400；Node 22.23.4；Python 3.12.10；uv 0.13.7。系统
 
 Starlette 当前对 `httpx` 测试客户端发出 1 条弃用警告，建议后续迁移至其 `httpx2` 适配；未屏蔽警告，没有将警告误报为零。测试正常通过，运行服务不使用该测试客户端。
 
+## 同日再次复核
+
+2026-11-06 本轮重新执行了严格 NuGet 恢复、8 个工程的 Release 构建、12 项 xUnit/VSTest、后端格式与迁移快照检查；全部通过，并生成新的 TRX。
+
+前端重新执行 `npm ci`、lint、7 项单元测试、完整 TypeScript 检查、生产构建、Prettier 和 2 项桌面/移动 Edge E2E；全部通过，npm 审计为 0 项漏洞，生产初始资源仍为 346.11 kB。Python 重新执行全仓 Ruff lint、格式检查和 pytest，24 项通过，仍保留上述 1 条弃用警告。
+
+本轮未发现需要修改业务实现的失败。再次检查确认 Docker CLI、Docker Desktop 和引擎管道均不存在，因此没有尝试管理员提权安装；Docker build、Compose、真实 PostgreSQL/MinIO 联调和 GitHub Actions 远程运行仍为未执行。此前记录的真实进程健康与关联日志结果不视为本轮 Docker 验收证据。
+
 ## 最终门禁与未执行项
 
 最终应用构建、格式、类型、lint 和回归已完成。以下结果明确区分可验证的应用行为与当前环境无法执行的集成/研究工作。

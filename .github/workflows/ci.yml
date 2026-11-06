@@ -1,0 +1,94 @@
+name: Skeleton CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: skeleton-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet tool restore
+      - run: dotnet restore apps/backend/BrainSeg.slnx --locked-mode
+      - run: dotnet build apps/backend/BrainSeg.slnx --configuration Release --no-restore
+      - run: dotnet format apps/backend/BrainSeg.slnx --verify-no-changes --no-restore
+      - run: dotnet test apps/backend/BrainSeg.slnx --configuration Release --no-build --logger trx
+      - run: dotnet ef migrations has-pending-model-changes --project apps/backend/src/BrainSeg.EntityFrameworkCore --startup-project apps/backend/src/BrainSeg.HttpApi.Host --configuration Release --no-build
+
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npx tsc --noEmit --project tsconfig.json
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm audit --audit-level=high
+
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+          enable-cache: true
+      - run: uv python install 3.12.10
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen pytest
+      - run: uv run --frozen python -m training validate-config
+
+  docker:
+    runs-on: ubuntu-24.04
+    needs: [backend, web, python]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.7"
+      - run: uv python install 3.12.10
+      - run: uv run --frozen python infra/scripts/init_env.py
+      - run: docker compose config --quiet
+      - run: docker compose build --pull
+      - run: docker compose up --wait --wait-timeout 180
+      - name: Check runtime and model readiness separately
+        run: |
+          curl --fail http://127.0.0.1:4200/health
+          curl --fail http://127.0.0.1:5000/health
+          curl --fail http://127.0.0.1:5000/ready
+          curl --fail http://127.0.0.1:5000/api/app/system
+          curl --fail http://127.0.0.1:8000/health
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/ready)" = "503"
+      - name: Failure diagnostics without environment values
+        if: failure()
+        run: docker compose logs --no-color backend ml-inference web
+      - name: Stop disposable CI stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans

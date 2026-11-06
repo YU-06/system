@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../BrainSeg.Domain.Shared/BrainSeg.Domain.Shared.csproj" />
+    <PackageReference Include="Volo.Abp.Ddd.Application.Contracts" />
+    <PackageReference Include="Volo.Abp.Identity.Application.Contracts" />
+    <PackageReference Include="Volo.Abp.PermissionManagement.Application.Contracts" />
+  </ItemGroup>
+</Project>

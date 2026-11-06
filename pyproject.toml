@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "brainseg-research"
+version = "0.1.0"
+description = "Research and teaching only; not for clinical diagnosis."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastapi==0.162.0",
+  "uvicorn==0.54.0",
+  "pydantic-settings==2.16.2",
+  "numpy==2.5.4",
+  "nibabel==5.4.2",
+  "onnxruntime==1.31.1",
+  "pillow==13.0.0",
+  "python-multipart==0.0.33",
+  "pyyaml==6.0.3",
+]
+
+[project.optional-dependencies]
+training = ["torch==2.15.0"]
+
+[dependency-groups]
+dev = ["httpx==0.28.1", "pytest==9.2.0", "ruff==0.17.4", "onnx==1.23.2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["services/ml-inference/brainseg_inference", "ml/training"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["services/ml-inference/tests", "ml/training/tests", "tests"]
+addopts = "-ra"
+
+[tool.uv]
+required-version = "==0.13.7"

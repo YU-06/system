@@ -1,0 +1,145 @@
+name: ${COMPOSE_PROJECT_NAME:-brainseg}
+
+x-backend-environment: &backend-environment
+  ASPNETCORE_ENVIRONMENT: Development
+  ASPNETCORE_URLS: http://+:8080
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-brainseg}
+  POSTGRES_USER: ${POSTGRES_USER:-brainseg}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run the environment initialization script first}
+  App__CorsOrigins: http://localhost:${WEB_PORT:-4200},http://127.0.0.1:${WEB_PORT:-4200}
+  ObjectStorage__Provider: Minio
+  ObjectStorage__Endpoint: http://object-storage:9000
+  ObjectStorage__Bucket: ${ObjectStorage__Bucket:-brainseg}
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Run the environment initialization script first}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Run the environment initialization script first}
+  MlInference__BaseUrl: http://ml-inference:8000
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17-alpine}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-brainseg}
+      POSTGRES_USER: ${POSTGRES_USER:-brainseg}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run the environment initialization script first}
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  object-storage:
+    image: ${MINIO_IMAGE:-brainseg-minio:local}
+    build:
+      context: .
+      dockerfile: infra/minio/Dockerfile
+    command: [server, /data, --console-address, ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Run the environment initialization script first}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Run the environment initialization script first}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - object-data:/data
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:9000/minio/health/live]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend-migrate:
+    image: brainseg-backend:local
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    command: [--migrate]
+    environment: *backend-environment
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: brainseg-backend:local
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    environment: *backend-environment
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-5000}:8080"
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:8080/health]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      object-storage:
+        condition: service_healthy
+      ml-inference:
+        condition: service_healthy
+      backend-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  web:
+    image: brainseg-web:local
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "127.0.0.1:${WEB_PORT:-4200}:8080"
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/health]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ml-inference:
+    image: brainseg-inference:local
+    build:
+      context: .
+      dockerfile: services/ml-inference/Dockerfile
+    environment:
+      ML_MODEL_PATH: ${ML_MODEL_PATH:-}
+      ML_MODEL_SHA256: ${ML_MODEL_SHA256:-}
+      ML_MODEL_VERSION: ${ML_MODEL_VERSION:-unpublished}
+      ML_PREPROCESSING_VERSION: ${ML_PREPROCESSING_VERSION:-flair-v1}
+      ML_THRESHOLD: ${ML_THRESHOLD:-0.5}
+      ML_MAX_UPLOAD_BYTES: ${ML_MAX_UPLOAD_BYTES:-67108864}
+      ML_MAX_DECOMPRESSED_BYTES: ${ML_MAX_DECOMPRESSED_BYTES:-134217728}
+      ML_MAX_VOLUME_VOXELS: ${ML_MAX_VOLUME_VOXELS:-16777216}
+      ML_REQUEST_TIMEOUT_SECONDS: ${ML_REQUEST_TIMEOUT_SECONDS:-30}
+    volumes:
+      - ./artifacts/models:/models:ro
+    ports:
+      - "127.0.0.1:${ML_PORT:-8000}:8000"
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  object-data:

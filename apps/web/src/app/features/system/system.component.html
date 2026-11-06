@@ -1,0 +1,155 @@
+<div class="page-heading">
+  <div>
+    <p class="eyebrow">{{ text.protocolTag }}</p>
+    <h1>{{ text.overview }}</h1>
+  </div>
+  <button
+    class="icon-button"
+    type="button"
+    [disabled]="loading()"
+    (click)="store.refresh()"
+    [title]="text.refresh"
+    [attr.aria-label]="text.refresh"
+  >
+    <ng-icon name="lucideRefreshCw" [class.spinning]="loading()" aria-hidden="true" />
+  </button>
+</div>
+
+<section class="status-strip" [attr.aria-label]="text.runtimeTitle">
+  <div class="status-item">
+    <ng-icon name="lucideActivity" class="status-icon" aria-hidden="true" />
+    <div>
+      <span class="field-label">{{ text.service }}</span>
+      <strong
+        data-testid="connection-status"
+        [class.positive]="connected()"
+        [class.negative]="store.state().kind === 'error'"
+      >
+        {{ loading() ? text.loading : connected() ? text.connected : text.unavailable }}
+      </strong>
+    </div>
+  </div>
+  <div class="status-item">
+    <ng-icon name="lucideFlaskConical" class="status-icon" aria-hidden="true" />
+    <div>
+      <span class="field-label">{{ text.scopeTitle }}</span
+      ><strong>{{ text.scopeValue }}</strong>
+    </div>
+  </div>
+  <div class="status-item">
+    <ng-icon name="lucideFileClock" class="status-icon" aria-hidden="true" />
+    <div>
+      <span class="field-label">{{ text.experiment }}</span
+      ><strong>{{ text.notRun }}</strong>
+    </div>
+  </div>
+</section>
+
+<div class="detail-columns">
+  <section class="detail-section" aria-labelledby="runtime-heading">
+    <div class="section-heading">
+      <h2 id="runtime-heading">{{ text.runtimeTitle }}</h2>
+      <span>{{ text.runtimeCaption }}</span>
+    </div>
+    <div class="runtime-content" aria-live="polite" [attr.aria-busy]="loading()">
+      @let state = store.state();
+      @switch (state.kind) {
+        @case ('loading') {
+          <div class="state-message" role="status">
+            <span class="loading-dot"></span>{{ text.loading }}
+          </div>
+        }
+        @case ('error') {
+          <div class="state-message error-message" role="alert">
+            <ng-icon name="lucideCircleX" aria-hidden="true" /><strong>{{
+              text.runtimeError
+            }}</strong>
+          </div>
+          @if (state.correlationId) {
+            <p class="trace">
+              <span>{{ text.correlationId }}</span
+              ><code>{{ state.correlationId }}</code>
+            </p>
+          }
+        }
+        @case ('empty') {
+          <div class="state-message" role="status">{{ text.runtimeEmpty }}</div>
+        }
+        @case ('success') {
+          <div class="connection-line">
+            <ng-icon name="lucideCircleCheck" aria-hidden="true" /><span>{{ text.connected }}</span>
+          </div>
+          <dl class="metadata">
+            <div>
+              <dt>{{ text.serviceName }}</dt>
+              <dd>
+                <code>{{ state.data.service }}</code>
+              </dd>
+            </div>
+            <div>
+              <dt>{{ text.serverTime }}</dt>
+              <dd>{{ state.data.serverTimeUtc | date: 'yyyy-MM-dd HH:mm:ss' : 'UTC' }}</dd>
+            </div>
+            <div>
+              <dt>{{ text.apiVersion }}</dt>
+              <dd>
+                <code>{{ text.apiVersionValue }}</code>
+              </dd>
+            </div>
+          </dl>
+        }
+      }
+    </div>
+    <div class="section-heading experiments-heading">
+      <h2>{{ text.resultsTitle }}</h2>
+      <span>{{ text.notRun }}</span>
+    </div>
+    <div class="empty-experiments">
+      <ng-icon name="lucideFileClock" aria-hidden="true" />
+      <p>{{ text.resultsEmpty }}</p>
+    </div>
+  </section>
+
+  <section class="detail-section protocol-section" aria-labelledby="protocol-heading">
+    <div class="section-heading">
+      <h2 id="protocol-heading">{{ text.protocolTitle }}</h2>
+      <span>{{ text.protocolCaption }}</span>
+    </div>
+    <dl class="metadata protocol-metadata">
+      <div>
+        <dt>{{ text.dataset }}</dt>
+        <dd>{{ text.datasetValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.modality }}</dt>
+        <dd>{{ text.modalityValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.task }}</dt>
+        <dd>{{ text.taskValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.inputSize }}</dt>
+        <dd>{{ text.inputSizeValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.architecture }}</dt>
+        <dd>{{ text.architectureValue }}</dd>
+      </div>
+      <div>
+        <dt>
+          {{ text.patientSplit }}<small>{{ text.splitLegend }}</small>
+        </dt>
+        <dd>{{ text.patientSplitValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.seeds }}</dt>
+        <dd>{{ text.seedsValue }}</dd>
+      </div>
+      <div>
+        <dt>{{ text.primaryMetric }}</dt>
+        <dd>{{ text.primaryMetricValue }}</dd>
+      </div>
+    </dl>
+  </section>
+</div>

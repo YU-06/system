@@ -1,0 +1,30 @@
+dataset: BraTS 2020
+modality: T2-FLAIR
+task: 2D axial Whole Tumor binary segmentation
+dataset_root: data/brats2020
+preprocessing_version: flair-v1
+input_size: 256
+train_patients: 258
+validation_patients: 74
+test_patients: 37
+split_seed: 42
+experiment_seeds: [42, 2024, 3407]
+architectures: [UNet, AttentionUNet]
+channels: [32, 64, 128, 256, 512]
+foreground_labels: [1, 2, 4]
+loss: BCEWithLogitsLoss+DiceLoss
+optimizer: Adam
+learning_rate: 0.0001
+batch_size: 16
+max_epochs: 100
+early_stopping_patience: 15
+checkpoint_metric: validation_dice
+threshold: 0.5
+threshold_source: validation_only
+augmentation:
+  train: true
+  validation: false
+  test: false
+device: cpu
+test_execution: locked_until_protocol_frozen
+result_status: NotRun

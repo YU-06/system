@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BrainSeg.Domain.Shared/BrainSeg.Domain.Shared.csproj" />
+    <Project Path="src/BrainSeg.Domain/BrainSeg.Domain.csproj" />
+    <Project Path="src/BrainSeg.Application.Contracts/BrainSeg.Application.Contracts.csproj" />
+    <Project Path="src/BrainSeg.Application/BrainSeg.Application.csproj" />
+    <Project Path="src/BrainSeg.EntityFrameworkCore/BrainSeg.EntityFrameworkCore.csproj" />
+    <Project Path="src/BrainSeg.HttpApi/BrainSeg.HttpApi.csproj" />
+    <Project Path="src/BrainSeg.HttpApi.Host/BrainSeg.HttpApi.Host.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BrainSeg.Tests/BrainSeg.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -3,6 +3,7 @@ name: ${COMPOSE_PROJECT_NAME:-brainseg}
 x-backend-environment: &backend-environment
   ASPNETCORE_ENVIRONMENT: Development
   ASPNETCORE_URLS: http://+:8080
+  AutoMapper__LicenseKey: ${AutoMapper__LicenseKey:-}
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
   POSTGRES_DB: ${POSTGRES_DB:-brainseg}

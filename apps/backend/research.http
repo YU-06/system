@@ -1,0 +1,176 @@
+# Research and teaching only. Not a medical device. Not for clinical diagnosis.
+# Set these process environment values using actual authorized records and artifacts.
+@baseUrl = http://127.0.0.1:5000
+@accessToken = {{$processEnv BRAINSEG_ACCESS_TOKEN}}
+@studyId = {{$processEnv BRAINSEG_STUDY_ID}}
+@modelId = {{$processEnv BRAINSEG_MODEL_ID}}
+@jobId = {{$processEnv BRAINSEG_JOB_ID}}
+@resultId = {{$processEnv BRAINSEG_RESULT_ID}}
+@experimentId = {{$processEnv BRAINSEG_EXPERIMENT_ID}}
+@stamp = {{$processEnv BRAINSEG_CONCURRENCY_STAMP}}
+@objectKey = {{$processEnv BRAINSEG_ARTIFACT_OBJECT_KEY}}
+@sha256 = {{$processEnv BRAINSEG_ARTIFACT_SHA256}}
+@gitCommit = {{$processEnv BRAINSEG_EXPERIMENT_GIT_COMMIT}}
+@configHash = {{$processEnv BRAINSEG_CONFIG_HASH}}
+@splitHash = {{$processEnv BRAINSEG_SPLIT_HASH}}
+@maskKey = {{$processEnv BRAINSEG_MASK_OBJECT_KEY}}
+@overlayKey = {{$processEnv BRAINSEG_OVERLAY_OBJECT_KEY}}
+@contourKey = {{$processEnv BRAINSEG_CONTOUR_OBJECT_KEY}}
+@areaPixels = {{$processEnv BRAINSEG_TUMOR_AREA_PIXELS}}
+@inferenceMilliseconds = {{$processEnv BRAINSEG_INFERENCE_MILLISECONDS}}
+@preprocessingMilliseconds = {{$processEnv BRAINSEG_PREPROCESSING_MILLISECONDS}}
+@postprocessingMilliseconds = {{$processEnv BRAINSEG_POSTPROCESSING_MILLISECONDS}}
+@validatedThreshold = {{$processEnv BRAINSEG_VALIDATED_THRESHOLD}}
+
+### List studies
+GET {{baseUrl}}/api/app/brain-study?skipCount=0&maxResultCount=20&sorting=studyNumber%20asc&status=Ready
+Authorization: Bearer {{accessToken}}
+
+### Get a study
+GET {{baseUrl}}/api/app/brain-study/{{studyId}}
+Authorization: Bearer {{accessToken}}
+
+### Upload an actual pseudonymized FLAIR volume, not a checked-in fixture
+POST {{baseUrl}}/api/app/brain-study/upload
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=BrainSegBoundary
+
+--BrainSegBoundary
+Content-Disposition: form-data; name="StudyNumber"
+
+RESEARCH-001
+--BrainSegBoundary
+Content-Disposition: form-data; name="Pseudonym"
+
+case_001
+--BrainSegBoundary
+Content-Disposition: form-data; name="SliceIndex"
+
+0
+--BrainSegBoundary
+Content-Disposition: form-data; name="File"; filename="research-flair.nii"
+Content-Type: application/octet-stream
+
+< ../../data/research-flair.nii
+--BrainSegBoundary--
+
+### Update pseudonym; a stale stamp returns 409
+PUT {{baseUrl}}/api/app/brain-study/{{studyId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"pseudonym":"case_002","concurrencyStamp":"{{stamp}}"}
+
+### Archive a study with no active jobs
+POST {{baseUrl}}/api/app/brain-study/{{studyId}}/archive
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
+
+### Soft-delete; active jobs return 409 and no records/files are physically cascaded
+DELETE {{baseUrl}}/api/app/brain-study/{{studyId}}?concurrencyStamp={{stamp}}
+Authorization: Bearer {{accessToken}}
+
+### List jobs
+GET {{baseUrl}}/api/app/segmentation-job?studyId={{studyId}}&status=Pending&sorting=requestedTime%20desc
+Authorization: Bearer {{accessToken}}
+
+### Get a job
+GET {{baseUrl}}/api/app/segmentation-job/{{jobId}}
+Authorization: Bearer {{accessToken}}
+
+### Create; replay this exact request to retrieve the same job
+POST {{baseUrl}}/api/app/segmentation-job
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+X-Correlation-Id: authorized-research-request-001
+
+{"studyId":"{{studyId}}","modelVersionId":"{{modelId}}","idempotencyKey":"authorized-request-001"}
+
+### Start, worker permission required
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/start
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
+
+### Report monotonic progress; use the fresh stamp from the prior response
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/report-progress
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}","progress":50}
+
+### Complete using real persisted mask/overlay/contour keys; metrics omitted without labels
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/complete
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}","maskObjectKey":"{{maskKey}}","overlayObjectKey":"{{overlayKey}}","contourObjectKey":"{{contourKey}}","tumorAreaPixels":{{areaPixels}},"inferenceMilliseconds":{{inferenceMilliseconds}},"preprocessingMilliseconds":{{preprocessingMilliseconds}},"postprocessingMilliseconds":{{postprocessingMilliseconds}}}
+
+### Record a failed execution, never submit raw stack traces
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/fail
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}","reason":"InferenceTimeout"}
+
+### Cancel a Pending/Running job
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/cancel
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
+
+### Retry a Failed job, maximum three retries
+POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/retry
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
+
+### List model versions
+GET {{baseUrl}}/api/app/model-version?isActive=true&architecture=UNet&sorting=name%20asc
+Authorization: Bearer {{accessToken}}
+
+### Get a model version
+GET {{baseUrl}}/api/app/model-version/{{modelId}}
+Authorization: Bearer {{accessToken}}
+
+### Register actual weights; replace every artifact field with verified training output
+POST {{baseUrl}}/api/app/model-version
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"name":"research-unet","architecture":"UNet","semanticVersion":"1.0.0","weightObjectKey":"{{objectKey}}","weightSha256":"{{sha256}}","threshold":{{validatedThreshold}},"metricsJson":"{\"status\":\"NotRun\"}"}
+
+### Activate/default after hash verification
+POST {{baseUrl}}/api/app/model-version/{{modelId}}/set-state
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}","isActive":true,"isDefault":true}
+
+### List results, retained after Study soft deletion
+GET {{baseUrl}}/api/app/segmentation-result?jobId={{jobId}}&sorting=createdTime%20desc
+Authorization: Bearer {{accessToken}}
+
+### Get a result
+GET {{baseUrl}}/api/app/segmentation-result/{{resultId}}
+Authorization: Bearer {{accessToken}}
+
+### List experiments
+GET {{baseUrl}}/api/app/experiment-run?modelVersionId={{modelId}}&randomSeed=42&sorting=createdTime%20desc
+Authorization: Bearer {{accessToken}}
+
+### Get an experiment
+GET {{baseUrl}}/api/app/experiment-run/{{experimentId}}
+Authorization: Bearer {{accessToken}}
+
+### Register an actual artifact, never substitute invented commits or metrics
+POST {{baseUrl}}/api/app/experiment-run
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"experimentName":"research-protocol","configHash":"{{configHash}}","gitCommit":"{{gitCommit}}","datasetSplitHash":"{{splitHash}}","randomSeed":42,"modelVersionId":"{{modelId}}","metricsJson":"{\"status\":\"NotRun\"}","artifactObjectKey":"{{objectKey}}"}

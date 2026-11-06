@@ -4,7 +4,7 @@
 
 ## 当前范围
 
-本阶段交付可构建的工程骨架，不包含真实训练权重、完整训练循环、病例任务流或已完成实验。BraTS 2020、单模态 T2-FLAIR、二维轴位 Whole Tumor 二分类协议固定不变；标签 1/2/4 映射为前景。所有实际实验均为 `NotRun`。
+当前已实现可构建的工程骨架及 BrainStudy、SegmentationJob、ModelVersion、SegmentationResult、ExperimentRun 的领域/应用/持久化功能，包含上传、查询、任务状态机和结果记录。尚不包含实际后台调度器、真实训练权重、完整训练循环或已完成实验。BraTS 2020、单模态 T2-FLAIR、二维轴位 Whole Tumor 二分类协议固定不变；标签 1/2/4 映射为前景。所有真实研究实验仍为 `NotRun`。
 
 初始化时仓库仅包含 Git 元数据与 Copilot 约定，未找到独立审计报告。本次以现有约定和实际构建/测试结果为依据，不声称存在未提供的审计结论。
 
@@ -13,15 +13,26 @@
 | 部分 | 版本与位置 |
 | --- | --- |
 | 后端 | .NET SDK 10.0.400、ABP 10.7.1，`apps/backend`，七层模块化单体 |
+| 对象映射 | ABP AutoMapper 模块，AutoMapper 15.1.4 安全修补版；配置工厂已适配 |
 | 前端 | Node 22.23.4、Angular 22.2.4、CLI/build 22.2.6，`apps/web`，Standalone |
 | 推理 | Python 3.12.10、FastAPI 0.162.0、ONNX Runtime 1.31.1，`services/ml-inference` |
 | 训练骨架 | `ml/training` 与 `ml/configs/baseline.yaml`，可选 PyTorch 2.15.0 |
-| 数据库 | PostgreSQL 17，EF Core PostgreSQL，已生成初始迁移与快照 |
+| 数据库 | PostgreSQL 17，EF Core PostgreSQL，已生成基础设施及五个领域表的迁移与快照 |
 | 文件 | 开发默认 `IObjectStorage` 本地实现；Compose 使用 MinIO/S3 适配器 |
 | 对象存储镜像 | 官方 MinIO 2025-10-15 源码固定提交构建，保留 AGPL 许可证 |
 | 锁定 | NuGet `packages.lock.json`、npm `package-lock.json`、Python `uv.lock` |
 
 没有使用 Redis，因此没有创建无消费者的 Redis 容器。不引入多租户、微前端或额外业务微服务。
+
+## 领域功能
+
+五个聚合均使用 ABP 审计、软删与并发戳；状态没有公共 setter。Job 只允许 Pending → Running → Succeeded/Failed/Cancelled、Pending → Cancelled，以及 Failed → Pending 的显式重试，最多三次重试。创建请求按请求人和幂等键去重，成功状态和唯一结果在同一事务写入。
+
+所有业务接口都要求认证；写操作还要求相应权限，未创建默认管理员或匿名写入口。列表支持分页、筛选与白名单排序，每页最多 100 条。上传计算真实 SHA-256，数据库不存 MRI 二进制。删除 Study 会软删，活动任务会阻断删除，关联终态任务、结果和对象文件保留，不做隐式物理级联清理。
+
+类图、ER 图、状态图、权限、API 与保留策略见 [领域文档](docs/api/research-domain.md)，请求示例见 [research.http](apps/backend/research.http)，设计决策见 [ADR 0002](docs/adr/0002-research-domain.md)，本阶段验证见 [测试报告 0002](docs/test-reports/0002-research-domain.md)。现有 `--migrate` 命令会同时应用新增领域迁移。
+
+AutoMapper 15 的无许可证开发/测试运行会发出许可提示，未屏蔽；生产使用须遵守其许可要求，通过本地 `.env` 或部署密钥配置 `AutoMapper__LicenseKey`，禁止把真实许可证提交到 Git。
 
 ## 从零启动：Docker Compose
 
@@ -115,7 +126,7 @@ uv run --frozen python -m training split --patients data/patient_ids.json --outp
 
 ## 验证与 CI
 
-2026-11-06 再次复核：后端 12 项、Angular 7 项、Python 24 项、浏览器 2 项测试通过；依赖恢复、构建、格式、lint 和类型检查通过，npm 审计为 0 项漏洞。Python 保留 1 条依赖弃用警告，详情见 [测试报告](docs/test-reports/0001-skeleton.md)。
+骨架阶段的 Angular 7 项、Python 24 项及浏览器 2 项测试结果见 [骨架报告](docs/test-reports/0001-skeleton.md)。2026-11-06 领域阶段完整后端回归为 **79 通过、4 项 PostgreSQL 环境跳过、0 失败**；严格依赖恢复、Release 构建、格式门禁、迁移快照及幂等 SQL 生成均通过，Python 24 项回归再次通过，详情见 [领域报告](docs/test-reports/0002-research-domain.md)。许可证和依赖弃用提示均如实保留。
 
 **容器验收尚未完成：当前主机未安装 Docker CLI、Docker Desktop 或容器引擎，因此 Docker build、Compose 启动、真实 PostgreSQL 迁移与 MinIO 联调均未执行。应用测试通过不能替代容器全链路验收。** 需先在宿主机安装并启动 Docker Desktop 的 Linux 容器引擎，再按上文命令完成验证；本项目不会自动提权安装系统组件。
 

@@ -1,3 +1,4 @@
+using BrainSeg.Research;
 using Microsoft.Extensions.DependencyInjection;
 using Volo.Abp.AuditLogging.EntityFrameworkCore;
 using Volo.Abp.EntityFrameworkCore;
@@ -21,6 +22,11 @@ public class BrainSegEntityFrameworkCoreModule : AbpModule
     public override void ConfigureServices(ServiceConfigurationContext context)
     {
         context.Services.AddAbpDbContext<BrainSegDbContext>();
+        context.Services.AddTransient<IBrainStudyRepository, EfCoreBrainStudyRepository>();
+        context.Services.AddTransient<ISegmentationJobRepository, EfCoreSegmentationJobRepository>();
+        context.Services.AddTransient<IModelVersionRepository, EfCoreModelVersionRepository>();
+        context.Services.AddTransient<ISegmentationResultRepository, EfCoreSegmentationResultRepository>();
+        context.Services.AddTransient<IExperimentRunRepository, EfCoreExperimentRunRepository>();
         Configure<AbpDbContextOptions>(options => options.UseNpgsql());
         Configure<PermissionManagementOptions>(options =>
         {

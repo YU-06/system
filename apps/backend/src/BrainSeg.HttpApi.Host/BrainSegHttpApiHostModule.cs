@@ -1,6 +1,8 @@
+using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 using BrainSeg.Hosting;
+using BrainSeg.Research;
 using BrainSeg.Storage;
 using BrainSeg.System;
 using Microsoft.AspNetCore.Builder;
@@ -62,8 +64,24 @@ public class BrainSegHttpApiHostModule : AbpModule
         var configuration = context.Services.GetConfiguration();
         var services = context.Services;
         Configure<AbpAspNetCoreMvcOptions>(options =>
-            options.ConventionalControllers.Create(typeof(SystemAppService).Assembly));
+        {
+            options.ConventionalControllers.Create(typeof(SystemAppService).Assembly);
+            options.ConventionalControllers.FormBodyBindingIgnoredTypes.Add(typeof(UploadBrainStudyInput));
+        });
         Configure<AbpExceptionHandlingOptions>(options => options.SendExceptionsDetailsToClients = false);
+        Configure<AbpExceptionHttpStatusCodeOptions>(options =>
+        {
+            foreach (var code in new[] { ResearchErrors.IllegalJobTransition, ResearchErrors.IllegalStudyTransition,
+                ResearchErrors.StudyNotReady, ResearchErrors.StudyHasActiveJobs, ResearchErrors.ModelNotReady,
+                ResearchErrors.DuplicateStudy, ResearchErrors.DuplicateModelVersion, ResearchErrors.IdempotencyConflict,
+                ResearchErrors.DefaultModelConflict, ResearchErrors.ResultAlreadyExists, ResearchErrors.DuplicateExperiment,
+                ResearchErrors.RetryLimitReached }) options.Map(code, HttpStatusCode.Conflict);
+            foreach (var code in new[] { ResearchErrors.InvalidInput, ResearchErrors.InvalidTimestamp,
+                ResearchErrors.InvalidProgress, ResearchErrors.InvalidSorting, ResearchErrors.InvalidFile,
+                ResearchErrors.InvalidMetrics, ResearchErrors.ArtifactHashMismatch }) options.Map(code, HttpStatusCode.BadRequest);
+            options.Map(ResearchErrors.UploadTooLarge, HttpStatusCode.RequestEntityTooLarge);
+            options.Map(ResearchErrors.ArtifactUnavailable, HttpStatusCode.NotFound);
+        });
         Configure<AbpAuditingOptions>(options => options.IsEnabledForAnonymousUsers = false);
         services.AddAuthentication(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
         services.Configure<RequestLocalizationOptions>(options => options

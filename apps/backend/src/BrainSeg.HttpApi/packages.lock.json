@@ -273,14 +273,6 @@
           "Microsoft.Extensions.Primitives": "10.0.11"
         }
       },
-      "Microsoft.Extensions.FileProviders.Embedded": {
-        "type": "Transitive",
-        "resolved": "10.0.11",
-        "contentHash": "x1wiStyE0RsviK1jdE7a6ua7jIhA0xPXOq5YMfWCWN7RJ9D4Q70oSD9ZVEzHBvovB+f1YQFdPU4036Act442Ow==",
-        "dependencies": {
-          "Microsoft.Extensions.FileProviders.Abstractions": "10.0.11"
-        }
-      },
       "Microsoft.Extensions.FileProviders.Physical": {
         "type": "Transitive",
         "resolved": "10.0.11",
@@ -956,7 +948,17 @@
       "brainseg.domain.shared": {
         "type": "Project",
         "dependencies": {
+          "Microsoft.Extensions.FileProviders.Embedded": "[10.0.11, )",
           "Volo.Abp.Ddd.Domain.Shared": "[10.7.1, )"
+        }
+      },
+      "Microsoft.Extensions.FileProviders.Embedded": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.11, )",
+        "resolved": "10.0.11",
+        "contentHash": "x1wiStyE0RsviK1jdE7a6ua7jIhA0xPXOq5YMfWCWN7RJ9D4Q70oSD9ZVEzHBvovB+f1YQFdPU4036Act442Ow==",
+        "dependencies": {
+          "Microsoft.Extensions.FileProviders.Abstractions": "10.0.11"
         }
       },
       "Volo.Abp.Ddd.Application": {

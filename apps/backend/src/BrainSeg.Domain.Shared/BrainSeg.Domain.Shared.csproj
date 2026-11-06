@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <GenerateEmbeddedFilesManifest>true</GenerateEmbeddedFilesManifest>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Volo.Abp.Ddd.Domain.Shared" />
+    <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Localization/BrainSeg/*.json" />
   </ItemGroup>
 </Project>

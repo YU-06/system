@@ -15,6 +15,20 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - "127.0.0.1:54329:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      BRAINSEG_TEST_POSTGRES: Host=127.0.0.1;Port=54329;Database=postgres;Username=postgres;Timeout=5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

@@ -3,6 +3,7 @@
     <ProjectReference Include="../BrainSeg.Domain/BrainSeg.Domain.csproj" />
     <ProjectReference Include="../BrainSeg.Application.Contracts/BrainSeg.Application.Contracts.csproj" />
     <PackageReference Include="Volo.Abp.Ddd.Application" />
+    <PackageReference Include="Volo.Abp.AutoMapper" />
     <PackageReference Include="Volo.Abp.Identity.Application" />
     <PackageReference Include="Volo.Abp.PermissionManagement.Application" />
   </ItemGroup>

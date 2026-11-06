@@ -16,7 +16,7 @@
 | 前端 | Node 22.23.4、Angular 22.2.4、CLI/build 22.2.6，`apps/web`，Standalone |
 | 推理 | Python 3.12.10、FastAPI 0.162.0、ONNX Runtime 1.31.1，`services/ml-inference` |
 | 训练骨架 | `ml/training` 与 `ml/configs/baseline.yaml`，可选 PyTorch 2.15.0 |
-| 数据库 | PostgreSQL 17，EF Core PostgreSQL，已提交初始迁移与快照 |
+| 数据库 | PostgreSQL 17，EF Core PostgreSQL，已生成初始迁移与快照 |
 | 文件 | 开发默认 `IObjectStorage` 本地实现；Compose 使用 MinIO/S3 适配器 |
 | 对象存储镜像 | 官方 MinIO 2025-10-15 源码固定提交构建，保留 AGPL 许可证 |
 | 锁定 | NuGet `packages.lock.json`、npm `package-lock.json`、Python `uv.lock` |
@@ -114,6 +114,10 @@ uv run --frozen python -m training split --patients data/patient_ids.json --outp
 患者 ID 文件必须是真实数据集中 369 个不同的去标识化 ID 的 JSON 数组，不是切片列表。工具固定生成 258/74/37 患者级划分和 SHA-256；没有真实患者清单时不会伪造 manifest。共享 `flair-v1` 预处理只使用当前体数据非零脑区统计量。默认协议为 3 个种子、相同通道与训练参数、最大 100 轮、验证 Dice 15 轮早停、测试集锁定。
 
 ## 验证与 CI
+
+2026-11-06 再次复核：后端 12 项、Angular 7 项、Python 24 项、浏览器 2 项测试通过；依赖恢复、构建、格式、lint 和类型检查通过，npm 审计为 0 项漏洞。Python 保留 1 条依赖弃用警告，详情见 [测试报告](docs/test-reports/0001-skeleton.md)。
+
+**容器验收尚未完成：当前主机未安装 Docker CLI、Docker Desktop 或容器引擎，因此 Docker build、Compose 启动、真实 PostgreSQL 迁移与 MinIO 联调均未执行。应用测试通过不能替代容器全链路验收。** 需先在宿主机安装并启动 Docker Desktop 的 Linux 容器引擎，再按上文命令完成验证；本项目不会自动提权安装系统组件。
 
 ```powershell
 dotnet restore apps/backend/BrainSeg.slnx --locked-mode

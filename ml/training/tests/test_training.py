@@ -58,6 +58,10 @@ def test_metrics_include_empty_and_disjoint_cases():
     assert binary_metrics(full, full).iou == 1
     assert binary_metrics(full, empty).dice == 0
     assert binary_metrics(full, empty).precision == 0
+    assert binary_metrics(full, empty).recall == 0
+    assert binary_metrics(empty, full).dice == 0
+    assert binary_metrics(empty, full).precision == 0
+    assert binary_metrics(empty, full).recall == 0
     with pytest.raises(ValueError):
         binary_metrics(empty, np.array([0], dtype=np.uint8))
 

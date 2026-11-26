@@ -24,6 +24,14 @@ describe('ResultComponent', () => {
     ...source,
     voxels: new Float32Array(12),
   };
+  const boundary: AxialVolume = {
+    ...source,
+    voxels: new Float32Array(12),
+  };
+  const uncertainty: AxialVolume = {
+    ...source,
+    voxels: new Float32Array(12).fill(50),
+  };
   const state = {
     kind: 'success',
     result: {
@@ -49,6 +57,8 @@ describe('ResultComponent', () => {
     study: { id: 'study-1', pseudonym: 'anon-1', hasGroundTruth: false },
     source,
     mask,
+    boundary,
+    uncertainty,
   } satisfies ResultState;
   const store = {
     state: signal(state),
@@ -110,6 +120,8 @@ describe('ResultComponent', () => {
       'overlay',
       mask,
       0.45,
+      boundary,
+      uncertainty,
     );
 
     const opacity = host.querySelectorAll<HTMLInputElement>('input[type="range"]')[1];
@@ -126,6 +138,34 @@ describe('ResultComponent', () => {
       'overlay',
       mask,
       0.7,
+      boundary,
+      uncertainty,
+    );
+  });
+
+  it('switches to the aligned uncertainty layer and exposes its fixed legend', async () => {
+    const fixture = TestBed.createComponent(ResultComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const host = fixture.nativeElement as HTMLElement;
+    const buttons = [...host.querySelectorAll('button')];
+    const uncertaintyButton = buttons.find((button) => button.textContent?.includes('不确定性'));
+    if (!uncertaintyButton) throw new Error('uncertaintyLayerButtonMissing');
+    uncertaintyButton.click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(fixture.componentInstance.mode()).toBe('uncertainty');
+    expect(host.querySelector('.uncertainty-legend')?.getAttribute('aria-label')).toContain('100');
+    expect(renderer.render).toHaveBeenLastCalledWith(
+      expect.any(HTMLCanvasElement),
+      source,
+      0,
+      'uncertainty',
+      mask,
+      0.45,
+      boundary,
+      uncertainty,
     );
   });
 });

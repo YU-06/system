@@ -58,6 +58,21 @@ class TrainingConfig(BaseModel):
     num_workers: int = Field(default=0, ge=0)
     cpu_threads: int = Field(default=2, ge=1)
     early_stopping_min_delta: float = Field(default=0.0, ge=0)
+    condition_id: Literal["baseline", "A0", "A1", "A2", "A3"] = "baseline"
+    input_mode: Literal["2d", "2p5d"] = "2d"
+    context_slices: int = Field(default=3, ge=1, le=9)
+    slice_fusion: Literal["stack", "center_attention"] = "stack"
+    boundary_head: bool = False
+    deep_supervision: bool = False
+    ensemble_checkpoints: list[str] = Field(default_factory=list)
+    uncertainty_enabled: bool = False
+    uncertainty_output_dtype: Literal["uint8"] = "uint8"
+    boundary_radius: int = Field(default=1, ge=1, le=5)
+    aux_loss_weight: float = Field(default=0.2, ge=0)
+    edge_loss_weight: float = Field(default=0.1, ge=0)
+    edge_positive_weight: float = Field(default=2.0, gt=0)
+    intensity_augmentation: bool = False
+    intensity_transform_mode: Literal["synchronized", "independent"] = "synchronized"
 
     @model_validator(mode="after")
     def validate_comparison(self) -> "TrainingConfig":
@@ -71,6 +86,12 @@ class TrainingConfig(BaseModel):
             raise ValueError("Augmentation is allowed only for the training split.")
         if len(self.channels) != 5 or any(channel <= 0 for channel in self.channels):
             raise ValueError("Five positive shared channel sizes are required.")
+        if self.context_slices % 2 != 1:
+            raise ValueError("Context slices must be an odd positive number.")
+        if self.input_mode == "2d" and self.slice_fusion != "stack":
+            raise ValueError("2D input uses stack fusion; center attention requires 2.5D input.")
+        if self.deep_supervision and not self.boundary_head:
+            raise ValueError("The A3 auxiliary head is paired with boundary supervision.")
         if self.execution_mode == "research" and (
             self.train_patients,
             self.validation_patients,
@@ -107,7 +128,71 @@ def load_config(path: Path) -> TrainingConfig:
 
 
 def config_hash(config: TrainingConfig) -> str:
-    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True, allow_nan=False).encode()
+    legacy_defaults = (
+        config.condition_id == "baseline"
+        and config.input_mode == "2d"
+        and config.slice_fusion == "stack"
+        and not config.boundary_head
+        and not config.deep_supervision
+        and not config.ensemble_checkpoints
+        and not config.uncertainty_enabled
+        and config.uncertainty_output_dtype == "uint8"
+        and config.boundary_radius == 1
+        and config.aux_loss_weight == 0.2
+        and config.edge_loss_weight == 0.1
+        and config.edge_positive_weight == 2.0
+        and not config.intensity_augmentation
+        and config.intensity_transform_mode == "synchronized"
+    )
+    if legacy_defaults:
+        legacy_fields = {
+            "dataset",
+            "modality",
+            "task",
+            "dataset_root",
+            "preprocessing_version",
+            "input_size",
+            "train_patients",
+            "validation_patients",
+            "test_patients",
+            "execution_mode",
+            "split_manifest",
+            "cache_index",
+            "experiment_protocol_path",
+            "output_directory",
+            "split_seed",
+            "experiment_seeds",
+            "architectures",
+            "channels",
+            "foreground_labels",
+            "loss",
+            "optimizer",
+            "learning_rate",
+            "batch_size",
+            "max_epochs",
+            "early_stopping_patience",
+            "checkpoint_metric",
+            "threshold",
+            "threshold_source",
+            "validation_thresholds",
+            "augmentation",
+            "device",
+            "test_execution",
+            "result_status",
+            "bce_weight",
+            "dice_smoothing",
+            "train_empty_fraction",
+            "horizontal_flip_probability",
+            "vertical_flip_probability",
+            "rotate_90",
+            "num_workers",
+            "cpu_threads",
+            "early_stopping_min_delta",
+        }
+        values = config.model_dump(mode="json", include=legacy_fields)
+    else:
+        values = config.model_dump(mode="json")
+    payload = json.dumps(values, sort_keys=True, allow_nan=False).encode()
     return hashlib.sha256(payload).hexdigest()
 
 

@@ -18,7 +18,7 @@ import { ResearchAccessService } from '../../shared/research-access.service';
 import { SliceRendererService } from '../../shared/volume/slice-renderer.service';
 import { ResultStore } from './result.store';
 
-type ViewMode = 'source' | 'mask' | 'overlay' | 'contour' | 'compare';
+type ViewMode = 'source' | 'mask' | 'overlay' | 'contour' | 'boundary' | 'uncertainty' | 'compare';
 
 @Component({
   selector: 'app-result-viewer',
@@ -123,7 +123,7 @@ export class ResultComponent implements AfterViewInit {
   private draw(): void {
     const state = this.store.state();
     if (state.kind !== 'success') return;
-    const { source, mask } = state;
+    const { source, mask, boundary, uncertainty } = state;
     const mode = this.mode();
     if (mode === 'compare') {
       if (this.compareSourceCanvas?.nativeElement) {
@@ -134,6 +134,8 @@ export class ResultComponent implements AfterViewInit {
           'source',
           mask,
           this.opacity(),
+          boundary,
+          uncertainty,
         );
       }
       if (this.compareOverlayCanvas?.nativeElement) {
@@ -144,6 +146,8 @@ export class ResultComponent implements AfterViewInit {
           'overlay',
           mask,
           this.opacity(),
+          boundary,
+          uncertainty,
         );
       }
       return;
@@ -156,6 +160,8 @@ export class ResultComponent implements AfterViewInit {
         mode,
         mask,
         this.opacity(),
+        boundary,
+        uncertainty,
       );
     }
   }

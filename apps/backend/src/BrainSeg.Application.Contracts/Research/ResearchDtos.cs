@@ -69,6 +69,26 @@ public sealed class SegmentationResultDto : FullAuditedEntityDto<Guid>
     public string? MaskSha256 { get; set; }
     public string? OverlayObjectKey { get; set; }
     public string? ContourObjectKey { get; set; }
+    public string? ProbabilityObjectKey { get; set; }
+    public string? ProbabilitySha256 { get; set; }
+    public string? BoundaryObjectKey { get; set; }
+    public string? BoundarySha256 { get; set; }
+    public string? UncertaintyObjectKey { get; set; }
+    public string? UncertaintySha256 { get; set; }
+    public string? ModelVarianceObjectKey { get; set; }
+    public string? ModelVarianceSha256 { get; set; }
+    public string InputMode { get; set; } = "2d";
+    public int ContextSlices { get; set; } = 1;
+    public string SliceFusion { get; set; } = "stack";
+    public bool BoundaryHead { get; set; }
+    public bool DeepSupervision { get; set; }
+    public string? MemberWeightHashesJson { get; set; }
+    public int EnsembleSize { get; set; } = 1;
+    public string? UncertaintyMethod { get; set; }
+    public double? MeanUncertainty { get; set; }
+    public double? P95Uncertainty { get; set; }
+    public string? CalibrationMetricsJson { get; set; }
+    public string? UncertaintyRetentionMetricsJson { get; set; }
     public string? RemotePredictionSha256 { get; set; }
     public string? GroundTruthSha256 { get; set; }
     public string? EvaluationProtocol { get; set; }

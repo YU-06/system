@@ -51,6 +51,29 @@ public sealed class InferenceReliabilityTests
     }
 
     [Fact]
+    public async Task Auxiliary_artifact_download_validates_sha_header_and_propagates_correlation()
+    {
+        var payload = Encoding.UTF8.GetBytes("synthetic-nifti-artifact");
+        var digest = Convert.ToHexStringLower(SHA256.HashData(payload));
+        var handler = new ArtifactHandler(payload, digest);
+        using var http = new HttpClient(handler) { BaseAddress = new Uri("http://inference.test") };
+        var client = new MlInferenceClient(
+            http,
+            new MemoryObjectStorage("input.nii", payload),
+            Options.Create(new MlInferenceOptions()));
+
+        await using var artifact = await client.OpenArtifactAsync(
+            $"{new string('a', 32)}.nii.gz", "correlation-123", CancellationToken.None);
+
+        using var copy = new MemoryStream();
+        await artifact.Content.CopyToAsync(copy);
+        Assert.Equal(payload, copy.ToArray());
+        Assert.Equal(digest, artifact.Sha256);
+        Assert.Equal("correlation-123", handler.CorrelationId);
+        Assert.EndsWith("/v1/artifacts/" + new string('a', 32) + ".nii.gz", handler.Path);
+    }
+
+    [Fact]
     public async Task Standard_http_resilience_pipeline_opens_circuit_after_failures()
     {
         var handler = new CountingUnavailableHandler();
@@ -160,6 +183,25 @@ public sealed class InferenceReliabilityTests
         {
             Interlocked.Increment(ref requestCount);
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        }
+    }
+
+    private sealed class ArtifactHandler(byte[] payload, string digest) : HttpMessageHandler
+    {
+        public string? CorrelationId { get; private set; }
+        public string? Path { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            CorrelationId = request.Headers.GetValues("X-Correlation-Id").Single();
+            Path = request.RequestUri?.AbsolutePath;
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(payload)
+            };
+            response.Headers.Add("X-Artifact-Sha256", digest);
+            return Task.FromResult(response);
         }
     }
 

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using Volo.Abp.EntityFrameworkCore;
 using Volo.Abp.Uow;
 
@@ -165,7 +166,17 @@ public sealed class InferenceJobProcessor(IServiceScopeFactory scopeFactory, IOb
         if (!string.Equals(stored.Sha256, inferred.PredictionSha256, StringComparison.OrdinalIgnoreCase))
             throw new InferenceClientException("PREDICTION_HASH_MISMATCH", false);
 
-        await CompleteAsync(snapshot, claimToken, inferred, stored, cancellationToken);
+        var auxiliary = new StoredAuxiliaryArtifacts(
+            await StoreArtifactAsync(inferred.ProbabilityArtifact, inferred.ProbabilitySha256,
+                "probability", snapshot.CorrelationId, cancellationToken),
+            await StoreArtifactAsync(inferred.BoundaryArtifact, inferred.BoundarySha256,
+                "boundary", snapshot.CorrelationId, cancellationToken),
+            await StoreArtifactAsync(inferred.UncertaintyArtifact, inferred.UncertaintySha256,
+                "uncertainty", snapshot.CorrelationId, cancellationToken),
+            await StoreArtifactAsync(inferred.ModelVarianceArtifact, inferred.ModelVarianceSha256,
+                "model-variance", snapshot.CorrelationId, cancellationToken));
+
+        await CompleteAsync(snapshot, claimToken, inferred, stored, auxiliary, cancellationToken);
     }
 
     private async Task<JobSnapshot?> LoadSnapshotAsync(Guid jobId, Guid claimToken,
@@ -205,12 +216,32 @@ public sealed class InferenceJobProcessor(IServiceScopeFactory scopeFactory, IOb
             || response.InputSize != job.InputSize || response.Threshold != job.Threshold
             || !string.Equals(response.WeightSha256, job.WeightSha256, StringComparison.OrdinalIgnoreCase)
             || response.Space != "original" || response.MaskShape.Length != 3
-            || response.MaskShape.Any(dimension => dimension < 1 || dimension > 512))
+            || response.MaskShape.Any(dimension => dimension < 1 || dimension > 512)
+            || response.InputMode is not ("2d" or "2p5d")
+            || response.ContextSlices is < 1 or > 9 || response.ContextSlices % 2 != 1
+            || response.SliceFusion is not ("stack" or "center_attention")
+            || (response.InputMode == "2d"
+                && (response.ContextSlices != 1 || response.SliceFusion != "stack"))
+            || response.EnsembleSize < 1
+            || response.MemberWeightHashes is { } memberHashes
+                && (memberHashes.Length != response.EnsembleSize
+                    || memberHashes.Any(hash => hash.Length != 64 || !hash.All(Uri.IsHexDigit))
+                    || !string.Equals(memberHashes[0], job.WeightSha256, StringComparison.OrdinalIgnoreCase))
+            || (response.EnsembleSize > 1 && response.MemberWeightHashes is null)
+            || !OptionalArtifactIsValid(response.ProbabilityArtifact, response.ProbabilitySha256)
+            || !OptionalArtifactIsValid(response.BoundaryArtifact, response.BoundarySha256)
+            || !OptionalArtifactIsValid(response.UncertaintyArtifact, response.UncertaintySha256)
+            || !OptionalArtifactIsValid(response.ModelVarianceArtifact, response.ModelVarianceSha256)
+            || response.BoundaryHead != (response.BoundaryArtifact is not null)
+            || (response.UncertaintyArtifact is not null && response.UncertaintyMethod is null))
+            throw new InferenceClientException("INFERENCE_RESPONSE_MISMATCH", false);
+        if (response.MeanUncertainty is < 0 or > 100 || response.P95Uncertainty is < 0 or > 100)
             throw new InferenceClientException("INFERENCE_RESPONSE_MISMATCH", false);
     }
 
     private async Task CompleteAsync(JobSnapshot snapshot, Guid claimToken,
-        InferenceSegmentResponse inference, StoredObject stored, CancellationToken cancellationToken)
+        InferenceSegmentResponse inference, StoredObject stored,
+        StoredAuxiliaryArtifacts auxiliary, CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var services = scope.ServiceProvider;
@@ -228,11 +259,40 @@ public sealed class InferenceJobProcessor(IServiceScopeFactory scopeFactory, IOb
                 inference.Timings.InferenceMilliseconds, inference.Timings.PreprocessingMilliseconds,
                 inference.Timings.PostprocessingMilliseconds, DateTime.UtcNow,
                 remotePredictionObjectKey: inference.PredictionObjectKey,
-                remotePredictionSha256: inference.PredictionSha256);
+                remotePredictionSha256: inference.PredictionSha256,
+                probabilityObjectKey: auxiliary.Probability?.ObjectKey,
+                probabilitySha256: auxiliary.Probability?.Sha256,
+                boundaryObjectKey: auxiliary.Boundary?.ObjectKey,
+                boundarySha256: auxiliary.Boundary?.Sha256,
+                uncertaintyObjectKey: auxiliary.Uncertainty?.ObjectKey,
+                uncertaintySha256: auxiliary.Uncertainty?.Sha256,
+                modelVarianceObjectKey: auxiliary.ModelVariance?.ObjectKey,
+                modelVarianceSha256: auxiliary.ModelVariance?.Sha256,
+                inputMode: inference.InputMode,
+                contextSlices: inference.ContextSlices,
+                sliceFusion: inference.SliceFusion,
+                boundaryHead: inference.BoundaryHead,
+                deepSupervision: inference.DeepSupervision,
+                memberWeightHashesJson: JsonSerializer.Serialize(
+                    inference.MemberWeightHashes ?? [snapshot.WeightSha256]),
+                ensembleSize: inference.EnsembleSize,
+                uncertaintyMethod: inference.UncertaintyMethod,
+                meanUncertainty: inference.MeanUncertainty,
+                p95Uncertainty: inference.P95Uncertainty);
             job.Complete(DateTime.UtcNow);
             database.SegmentationResults.Add(result);
-            await services.GetRequiredService<IObjectWriteIntentManager>()
-                .CompleteInCurrentUnitOfWorkAsync(stored.ObjectKey, cancellationToken);
+            var writeIntents = services.GetRequiredService<IObjectWriteIntentManager>();
+            foreach (var objectKey in new string?[]
+            {
+                stored.ObjectKey,
+                auxiliary.Probability?.ObjectKey,
+                auxiliary.Boundary?.ObjectKey,
+                auxiliary.Uncertainty?.ObjectKey,
+                auxiliary.ModelVariance?.ObjectKey
+            }.OfType<string>())
+            {
+                await writeIntents.CompleteInCurrentUnitOfWorkAsync(objectKey, cancellationToken);
+            }
             await database.SaveChangesAsync(cancellationToken);
             await unit.CompleteAsync(cancellationToken);
         }
@@ -241,4 +301,37 @@ public sealed class InferenceJobProcessor(IServiceScopeFactory scopeFactory, IOb
     private sealed record JobSnapshot(Guid Id, int RetryCount, string CorrelationId, string InputObjectKey,
         string InputSha256, ModelArchitecture Architecture, string ModelSemanticVersion,
         string PreprocessingVersion, string WeightSha256, int InputSize, double Threshold);
+
+    private async Task<StoredObject?> StoreArtifactAsync(string? objectKey, string? expectedSha256,
+        string artifactType, string correlationId, CancellationToken cancellationToken)
+    {
+        if ((objectKey is null) != (expectedSha256 is null))
+            throw new InferenceClientException("INFERENCE_RESPONSE_MISMATCH", false);
+        if (objectKey is null) return null;
+
+        await using var remote = await inferenceClient.OpenArtifactAsync(
+            objectKey, correlationId, cancellationToken);
+        if (!string.Equals(remote.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InferenceClientException("ARTIFACT_HASH_MISMATCH", false);
+        var storedKey = $"{Guid.NewGuid():N}.nii.gz";
+        await intents.RegisterAsync(storedKey, $"prediction-{artifactType}", cancellationToken);
+        var stored = await storage.SaveAsync(storedKey, remote.Content, cancellationToken);
+        if (!string.Equals(stored.Sha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InferenceClientException("ARTIFACT_HASH_MISMATCH", false);
+        return stored;
+    }
+
+    private static bool OptionalArtifactIsValid(string? objectKey, string? sha256) =>
+        (objectKey is null && sha256 is null)
+        || (objectKey is { Length: 39 }
+            && objectKey.EndsWith(".nii.gz", StringComparison.Ordinal)
+            && objectKey[..32].All(Uri.IsHexDigit)
+            && sha256 is { Length: 64 }
+            && sha256.All(Uri.IsHexDigit));
+
+    private sealed record StoredAuxiliaryArtifacts(
+        StoredObject? Probability,
+        StoredObject? Boundary,
+        StoredObject? Uncertainty,
+        StoredObject? ModelVariance);
 }

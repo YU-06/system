@@ -107,6 +107,37 @@ public sealed class MlInferenceClient(HttpClient client, IObjectStorage storage,
         }
     }
 
+    public async Task<InferencePredictionDownload> OpenArtifactAsync(string artifactObjectKey,
+        string correlationId, CancellationToken cancellationToken)
+    {
+        var request = CreateRequest(HttpMethod.Get,
+            $"/v1/artifacts/{Uri.EscapeDataString(artifactObjectKey)}", correlationId);
+        HttpResponseMessage response;
+        try
+        {
+            response = await SendRequestAsync(request, cancellationToken);
+        }
+        finally
+        {
+            request.Dispose();
+        }
+        try
+        {
+            await EnsureSuccessAsync(response, cancellationToken);
+            var digest = response.Headers.TryGetValues("X-Artifact-Sha256", out var values)
+                ? values.SingleOrDefault() : null;
+            if (digest is null || digest.Length != 64 || !digest.All(Uri.IsHexDigit))
+                throw new InferenceClientException("ARTIFACT_HASH_MISSING", false, response.StatusCode);
+            var content = await response.Content.ReadAsStreamAsync(cancellationToken);
+            return new InferencePredictionDownload(response, content, digest.ToLowerInvariant());
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
+    }
+
     public async Task<InferenceEvaluationResponse> EvaluateAsync(string inputObjectKey,
         string groundTruthObjectKey, string predictionObjectKey, string correlationId,
         CancellationToken cancellationToken)

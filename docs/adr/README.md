@@ -12,5 +12,6 @@
 | [0006](0006-angular-research-ui.md) | Angular 科研工作台和查看器 | Accepted |
 | [0007](0007-system-quality-gates.md) | 系统质量门禁与受控性能测试 | Accepted |
 | [0008](0008-deployment-documentation.md) | 可复现部署文档、私有网络与证据限制 | Accepted with deployment blockers |
+| [0010](0010-2p5d-boundary-uncertainty.md) | 2.5D 跨切片注意力、边界深监督与不确定性产物 | Accepted |
 
 ADR 记录设计选择，不等同于实现或运行证明；各阶段实际命令和 `Pass` / `Fail` / `Blocked` / `NotRun` 状态应以对应测试报告为准。

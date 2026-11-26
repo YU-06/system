@@ -94,6 +94,20 @@ classDiagram
     +string EvaluationProtocol
     +string OverlayObjectKey
     +string ContourObjectKey
+    +string ProbabilityObjectKey
+    +string BoundaryObjectKey
+    +string UncertaintyObjectKey
+    +string ModelVarianceObjectKey
+    +string InputMode
+    +int ContextSlices
+    +string SliceFusion
+    +int EnsembleSize
+    +string MemberWeightHashesJson
+    +string UncertaintyMethod
+    +double MeanUncertainty
+    +double P95Uncertainty
+    +string CalibrationMetricsJson
+    +string UncertaintyRetentionMetricsJson
     +double Dice
     +double IoU
     +double Precision
@@ -221,6 +235,26 @@ erDiagram
     varchar MaskSha256
     varchar OverlayObjectKey
     varchar ContourObjectKey
+    varchar ProbabilityObjectKey
+    varchar ProbabilitySha256
+    varchar BoundaryObjectKey
+    varchar BoundarySha256
+    varchar UncertaintyObjectKey
+    varchar UncertaintySha256
+    varchar ModelVarianceObjectKey
+    varchar ModelVarianceSha256
+    varchar InputMode
+    int ContextSlices
+    varchar SliceFusion
+    boolean BoundaryHead
+    boolean DeepSupervision
+    int EnsembleSize
+    varchar MemberWeightHashesJson
+    varchar UncertaintyMethod
+    double MeanUncertainty
+    double P95Uncertainty
+    varchar CalibrationMetricsJson
+    varchar UncertaintyRetentionMetricsJson
     varchar RemotePredictionObjectKey
     varchar RemotePredictionSha256
     varchar GroundTruthSha256

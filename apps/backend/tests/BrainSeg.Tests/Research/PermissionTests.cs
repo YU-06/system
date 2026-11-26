@@ -59,6 +59,20 @@ public class PermissionTests
     }
 
     [Fact]
+    public async Task Result_auxiliary_download_requires_result_permission()
+    {
+        using var factory = new ResearchFactory();
+        await factory.InitializeAsync();
+        using var client = factory.AuthenticatedClient(
+            ResearchPermissions.BrainStudies.Default,
+            ResearchPermissions.SegmentationJobs.Default);
+        using var response = await client.PostAsync(
+            $"/api/app/segmentation-result/{Guid.NewGuid()}/download-artifact?artifactType=uncertainty",
+            content: null);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
     public void Assemblies_preserve_domain_and_contract_dependency_boundaries()
     {
         var domain = typeof(BrainStudy).Assembly.GetReferencedAssemblies().Select(assembly => assembly.Name).ToArray();

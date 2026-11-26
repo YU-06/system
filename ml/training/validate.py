@@ -10,13 +10,15 @@ from torch.utils.data import DataLoader
 from training import DISCLAIMER
 from training.datasets.brats2d import Brats2DDataset
 from training.experiment_protocol import (
-    condition_for_architecture,
+    apply_ablation_condition,
+    condition_metadata,
+    load_ablation_matrix,
     load_experiment_protocol,
     protocol_sha256,
     select_validation_threshold,
     validate_training_config,
 )
-from training.losses import BCEDiceLoss
+from training.losses import BoundaryDeepSupervisionLoss
 from training.metrics import (
     BinaryMetrics,
     ConfusionCounts,
@@ -24,16 +26,21 @@ from training.metrics import (
     macro_metrics,
     metrics_from_confusion,
 )
+from training.models.unet import SegmentationOutput
 from training.preprocess import load_original_mask
 from training.protocol import TrainingConfig, load_config, sha256_file, write_hashed_json
-from training.reconstruct_volume import patient_metrics, save_volume
+from training.reconstruct_volume import patient_metrics, patient_spatial_metrics, save_volume
 from training.run_io import checkpoint_model, config_hash
 
 
 @dataclass
 class EvaluationResult:
     loss: float
+    region_loss: float
+    auxiliary_loss: float
+    edge_loss: float
     patient_metrics: dict[str, BinaryMetrics]
+    patient_spatial_metrics: dict[str, dict[str, float | str | None]]
     patient_confusions: dict[str, ConfusionCounts]
     slice_metrics: list[dict]
     slice_confusions: list[ConfusionCounts]
@@ -60,6 +67,11 @@ class EvaluationResult:
         pooled = sum(self.patient_confusions.values(), ConfusionCounts())
         return {
             "loss": self.loss,
+            "loss_breakdown": {
+                "region": self.region_loss,
+                "auxiliary": self.auxiliary_loss,
+                "edge": self.edge_loss,
+            },
             "mean_patient": self.mean_patient.model_dump(),
             "aggregation": {
                 "slice_level_macro": slice_macro.model_dump(),
@@ -83,6 +95,7 @@ class EvaluationResult:
             "patients": {
                 identifier: value.model_dump() for identifier, value in self.patient_metrics.items()
             },
+            "patient_spatial_metrics": self.patient_spatial_metrics,
             "slices": self.slice_metrics,
             "single_slice_inference_milliseconds": self.single_slice_inference_milliseconds,
             "case_batched_inference_milliseconds": self.case_inference_milliseconds,
@@ -99,18 +112,30 @@ def evaluate_model(
 ) -> EvaluationResult:
     if dataset.transform is not None or any(record.subset == "train" for record in dataset.records):
         raise ValueError("Evaluation requires an unaugmented complete validation or test dataset.")
+    if dataset.input_mode != config.input_mode or dataset.context_slices != config.context_slices:
+        raise ValueError(
+            "Evaluation dataset input mode differs from the frozen model configuration."
+        )
     torch.set_num_threads(config.cpu_threads)
     model.eval()
-    criterion = BCEDiceLoss(config.bce_weight, config.dice_smoothing)
+    criterion = BoundaryDeepSupervisionLoss(
+        config.bce_weight,
+        config.dice_smoothing,
+        config.aux_loss_weight,
+        config.edge_loss_weight,
+        config.edge_positive_weight,
+        config.boundary_radius,
+    )
     loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False, num_workers=0)
     patient_results: dict[str, BinaryMetrics] = {}
+    patient_spatial_results: dict[str, dict[str, float | str | None]] = {}
     patient_confusions: dict[str, ConfusionCounts] = {}
     slice_results: list[dict] = []
     slice_confusions: list[ConfusionCounts] = []
     case_times: dict[str, float] = {}
     current_patient: str | None = None
     current_masks: dict[int, np.ndarray] = {}
-    loss_sum = 0.0
+    loss_sum = region_loss_sum = auxiliary_loss_sum = edge_loss_sum = 0.0
     count = 0
     started = time.perf_counter()
 
@@ -118,6 +143,19 @@ def evaluate_model(
         expected, affine = load_original_mask(dataset.index_path, identifier, dataset.cache)
         volume, values = patient_metrics(predictions, expected)
         patient_results[identifier] = values
+        patient = dataset.cache.patients[identifier]
+        geometry = dataset.patient_geometry[identifier]
+        patient_spatial_results[identifier] = patient_spatial_metrics(
+            volume,
+            expected,
+            tuple(float(value) for value in geometry.spacing.tolist()),
+            patient.spatial_unit,
+            geometry.qform,
+            patient.qform_code,
+            geometry.sform,
+            patient.sform_code,
+            affine,
+        )
         patient_confusions[identifier] = binary_confusion(volume, expected)
         if output_directory is not None:
             save_volume(volume, affine, output_directory / f"{identifier}_pred.nii.gz")
@@ -130,13 +168,19 @@ def evaluate_model(
         single_time = (time.perf_counter() - single_started) * 1000
         for batch in loader:
             batch_started = time.perf_counter()
-            logits = model(batch["image"])
+            output = model(batch["image"], return_outputs=True)
             elapsed = (time.perf_counter() - batch_started) * 1000
+            if not isinstance(output, SegmentationOutput):
+                raise ValueError("Model did not return the configured structured output.")
+            logits = output.segmentation_logits
             if not torch.isfinite(logits).all():
                 raise ValueError("Model emitted non-finite validation logits.")
-            loss = criterion(logits, batch["mask"])
+            losses = criterion(output, batch["mask"])
             batch_count = len(batch["patient_id"])
-            loss_sum += float(loss.item()) * batch_count
+            loss_sum += float(losses.total.item()) * batch_count
+            region_loss_sum += float(losses.region.item()) * batch_count
+            auxiliary_loss_sum += float(losses.auxiliary.item()) * batch_count
+            edge_loss_sum += float(losses.edge.item()) * batch_count
             count += batch_count
             predicted = (logits.sigmoid() >= config.threshold).cpu().numpy().astype(np.uint8)
             expected_slices = batch["mask"].cpu().numpy().astype(np.uint8)
@@ -169,7 +213,11 @@ def evaluate_model(
         raise ValueError("Evaluation did not process every requested patient.")
     return EvaluationResult(
         loss_sum / count,
+        region_loss_sum / count,
+        auxiliary_loss_sum / count,
+        edge_loss_sum / count,
         patient_results,
+        patient_spatial_results,
         patient_confusions,
         slice_results,
         slice_confusions,
@@ -208,12 +256,23 @@ def run_validation(
     if config.execution_mode == "research":
         validate_training_config(protocol, config)
     model, checkpoint = checkpoint_model(checkpoint_path, config)
-    condition_name, condition = condition_for_architecture(protocol, checkpoint["architecture"])
-    if checkpoint.get("model_version") != condition.model_version:
+    condition_name, model_version, matrix_digest = condition_metadata(
+        protocol, config, checkpoint["architecture"]
+    )
+    if (
+        checkpoint.get("model_version") != model_version
+        or checkpoint.get("condition_id", "baseline") != config.condition_id
+        or checkpoint.get("ablation_matrix_sha256") != matrix_digest
+    ):
         raise ValueError(
             "Checkpoint implementation version differs from the preregistered model condition."
         )
-    dataset = Brats2DDataset(Path(config.cache_index), "validation")
+    dataset = Brats2DDataset(
+        Path(config.cache_index),
+        "validation",
+        input_mode=config.input_mode,
+        context_slices=config.context_slices,
+    )
     if selection_mode not in {"search", "fixed_050"}:
         raise ValueError("Threshold selection mode must be search or fixed_050.")
     thresholds = config.validation_thresholds if selection_mode == "search" else [0.50]
@@ -242,10 +301,12 @@ def run_validation(
     report.update(
         architecture=checkpoint["architecture"],
         condition_name=condition_name,
-        model_version=condition.model_version,
+        model_version=model_version,
+        condition_id=config.condition_id,
         run_id=run_id,
         seed=checkpoint["seed"],
         git_commit=git_commit,
+        ablation_matrix_sha256=matrix_digest,
         model_weight_sha256=checkpoint["model_weight_sha256"],
         checkpoint_sha256=sha256_file(checkpoint_path),
         protocol_sha256=protocol_sha256(Path(config.experiment_protocol_path)),
@@ -259,8 +320,10 @@ def run_validation(
                 "git_commit": git_commit,
                 "run_id": run_id,
                 "condition_name": condition_name,
+                "condition_id": config.condition_id,
                 "architecture": checkpoint["architecture"],
-                "model_version": condition.model_version,
+                "model_version": model_version,
+                "ablation_matrix_sha256": matrix_digest,
                 "preprocessing_version": config.preprocessing_version,
                 "seed": checkpoint["seed"],
                 "evaluation_protocol": protocol.protocol_id,
@@ -290,8 +353,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--freeze", type=Path)
     parser.add_argument("--selection-mode", choices=["search", "fixed_050"], default="search")
+    parser.add_argument("--condition", choices=["A0", "A1", "A2", "A3"])
     arguments = parser.parse_args()
     config = load_config(arguments.config)
+    if arguments.condition:
+        config = apply_ablation_condition(config, load_ablation_matrix(), arguments.condition)
     result = run_validation(
         config, arguments.checkpoint, arguments.output, arguments.freeze, arguments.selection_mode
     )

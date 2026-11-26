@@ -32,6 +32,12 @@ class LocalObjectStorage:
         return f"{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex}.nii.gz"
 
     def put_prediction(self, payload: bytes, metadata: dict[str, Any]) -> StoredArtifact:
+        if len(payload) > self.max_object_bytes:
+            raise ServiceError(
+                "PREDICTION_TOO_LARGE",
+                "The prediction artifact exceeds the configured size limit.",
+                413,
+            )
         request_id = metadata.get("requestId")
         if not isinstance(request_id, str):
             raise ServiceError("INVALID_REQUEST_ID", "The request identifier is invalid.")
@@ -45,6 +51,43 @@ class LocalObjectStorage:
                 "predictionSha256": digest,
             }
             encoded = (json.dumps(manifest, sort_keys=True, allow_nan=False) + "\n").encode()
+            self._atomic_write(self.root / f"{object_key}.json", encoded)
+        except Exception:
+            (self.root / object_key).unlink(missing_ok=True)
+            raise
+        return StoredArtifact(object_key=object_key, sha256=digest)
+
+    def put_auxiliary(
+        self, payload: bytes, metadata: dict[str, Any], artifact_type: str
+    ) -> StoredArtifact:
+        if len(payload) > self.max_object_bytes:
+            raise ServiceError(
+                "PREDICTION_TOO_LARGE",
+                "The auxiliary artifact exceeds the configured size limit.",
+                413,
+            )
+        if artifact_type not in {"probability", "boundary", "uncertainty", "model_variance"}:
+            raise ServiceError("INVALID_ARTIFACT_TYPE", "The artifact type is invalid.")
+        request_id = metadata.get("requestId")
+        if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
+            raise ServiceError("INVALID_REQUEST_ID", "The request identifier is invalid.")
+        object_key = f"{uuid.uuid5(uuid.NAMESPACE_URL, f'{request_id}:{artifact_type}').hex}.nii.gz"
+        digest = hashlib.sha256(payload).hexdigest()
+        self._atomic_write(self.root / object_key, payload)
+        try:
+            encoded = (
+                json.dumps(
+                    {
+                        **metadata,
+                        "objectKey": object_key,
+                        "predictionSha256": digest,
+                        "artifactType": artifact_type,
+                    },
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode()
             self._atomic_write(self.root / f"{object_key}.json", encoded)
         except Exception:
             (self.root / object_key).unlink(missing_ok=True)

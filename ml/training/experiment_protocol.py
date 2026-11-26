@@ -7,11 +7,13 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from training import DISCLAIMER
 from training.protocol import TrainingConfig
 
 PROTOCOL_PATH = Path("ml/configs/experiment_protocol.yaml")
 PROTOCOL_SCRIPT_VERSION = "experiment-report-v1"
 ALLOWED_DIFFERENCES = frozenset({"model.architecture", "model.attention_gate", "run_id"})
+ABLATION_MATRIX_PATH = Path("ml/configs/ablation_matrix.yaml")
 
 
 class ModelCondition(BaseModel):
@@ -160,6 +162,203 @@ class ExperimentProtocol(BaseModel):
                 "Representative cases must follow the preregistered cohort and tie rule."
             )
         return self
+
+
+class AblationCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    architecture: Literal["UNet", "AttentionUNet"]
+    attention_gate: bool
+    input_mode: Literal["2d", "2p5d"]
+    context_slices: int = Field(ge=1, le=9)
+    slice_fusion: Literal["stack", "center_attention"]
+    boundary_head: bool
+    deep_supervision: bool
+    model_version: str
+    run_id_prefix: str = Field(pattern=r"^[a-z][a-z0-9-]{0,40}$")
+
+    @model_validator(mode="after")
+    def validate_condition(self) -> "AblationCondition":
+        if self.context_slices % 2 != 1:
+            raise ValueError("Ablation context size must be odd.")
+        if self.attention_gate != (self.architecture == "AttentionUNet"):
+            raise ValueError("The gate flag must match the declared architecture.")
+        if self.input_mode == "2d" and self.slice_fusion != "stack":
+            raise ValueError("The 2D conditions use stack fusion.")
+        if self.deep_supervision and not self.boundary_head:
+            raise ValueError("Deep supervision is paired with the boundary head in A3.")
+        return self
+
+
+class AblationMatrix(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    matrix_id: str
+    matrix_version: Literal[1]
+    base_protocol_id: str
+    conditions: dict[str, AblationCondition]
+    allowed_condition_difference_paths: list[str]
+    pairwise_difference_paths: dict[str, list[str]]
+    disclaimer: str
+
+    @model_validator(mode="after")
+    def validate_frozen_matrix(self) -> "AblationMatrix":
+        if set(self.conditions) != {"A0", "A1", "A2", "A3"}:
+            raise ValueError("The ablation matrix must declare exactly A0 through A3.")
+        if self.disclaimer != DISCLAIMER:
+            raise ValueError("The research disclaimer must remain attached to the ablation matrix.")
+        expected = {
+            "A0": ("UNet", False, "2d", "stack", False, False),
+            "A1": ("AttentionUNet", True, "2d", "stack", False, False),
+            "A2": ("AttentionUNet", True, "2p5d", "center_attention", False, False),
+            "A3": ("AttentionUNet", True, "2p5d", "center_attention", True, True),
+        }
+        for name, condition in self.conditions.items():
+            observed = (
+                condition.architecture,
+                condition.attention_gate,
+                condition.input_mode,
+                condition.slice_fusion,
+                condition.boundary_head,
+                condition.deep_supervision,
+            )
+            if observed != expected[name] or condition.context_slices != 3:
+                raise ValueError(f"{name} differs from its preregistered ablation definition.")
+        required_pairs = {
+            "A0_A1": {
+                "condition_id",
+                "model.architecture",
+                "model.attention_gate",
+                "model.model_version",
+                "run_id",
+            },
+            "A1_A2": {
+                "condition_id",
+                "input_mode",
+                "slice_fusion",
+                "model.model_version",
+                "run_id",
+            },
+            "A2_A3": {
+                "condition_id",
+                "boundary_head",
+                "deep_supervision",
+                "model.model_version",
+                "run_id",
+            },
+        }
+        observed_pairs = {key: set(paths) for key, paths in self.pairwise_difference_paths.items()}
+        if observed_pairs != required_pairs:
+            raise ValueError("Pairwise ablation differences must match the fixed A0-A3 matrix.")
+        allowed = set().union(*required_pairs.values())
+        if set(self.allowed_condition_difference_paths) != allowed:
+            raise ValueError("Only declared architecture and ablation fields may differ.")
+        return self
+
+
+def load_ablation_matrix(path: Path = ABLATION_MATRIX_PATH) -> AblationMatrix:
+    return AblationMatrix.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def ablation_matrix_sha256(path: Path = ABLATION_MATRIX_PATH) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def apply_ablation_condition(
+    config: TrainingConfig, matrix: AblationMatrix, condition_id: str
+) -> TrainingConfig:
+    if condition_id not in matrix.conditions:
+        raise ValueError("Ablation condition is not preregistered.")
+    condition = matrix.conditions[condition_id]
+    values = config.model_dump(mode="json")
+    values.update(
+        condition_id=condition_id,
+        input_mode=condition.input_mode,
+        context_slices=condition.context_slices,
+        slice_fusion=condition.slice_fusion,
+        boundary_head=condition.boundary_head,
+        deep_supervision=condition.deep_supervision,
+    )
+    return TrainingConfig.model_validate(values)
+
+
+def condition_metadata(
+    protocol: ExperimentProtocol, config: TrainingConfig, architecture: str
+) -> tuple[str, str, str | None]:
+    if config.condition_id == "baseline":
+        name, condition = condition_for_architecture(protocol, architecture)
+        return name, condition.model_version, None
+    matrix = load_ablation_matrix()
+    condition = matrix.conditions.get(config.condition_id)
+    if condition is None or condition.architecture != architecture:
+        raise ValueError("Checkpoint model does not match the selected ablation condition.")
+    if (
+        apply_ablation_condition(config, matrix, config.condition_id).model_dump()
+        != config.model_dump()
+    ):
+        raise ValueError("Training config differs from the frozen ablation condition.")
+    return config.condition_id, condition.model_version, ablation_matrix_sha256()
+
+
+def build_ablation_run_config(
+    config: TrainingConfig, matrix: AblationMatrix, condition_id: str, seed: int
+) -> dict[str, Any]:
+    if condition_id not in matrix.conditions or seed not in config.experiment_seeds:
+        raise ValueError("Ablation condition and seed must belong to the registered protocol.")
+    condition = matrix.conditions[condition_id]
+    result = config.model_dump(mode="json")
+    result["experiment_seeds"] = [seed]
+    result["condition_id"] = condition_id
+    result["input_mode"] = condition.input_mode
+    result["context_slices"] = condition.context_slices
+    result["slice_fusion"] = condition.slice_fusion
+    result["boundary_head"] = condition.boundary_head
+    result["deep_supervision"] = condition.deep_supervision
+    result["model"] = {
+        "architecture": condition.architecture,
+        "attention_gate": condition.attention_gate,
+        "model_version": condition.model_version,
+    }
+    result["seed"] = seed
+    result["run_id"] = f"{condition.run_id_prefix}-seed-{seed}"
+    result["ablation_matrix_id"] = matrix.matrix_id
+    return result
+
+
+def assert_ablation_matrix_differences(
+    config: TrainingConfig, matrix: AblationMatrix, seed: int
+) -> list[dict[str, Any]]:
+    names = ("A0", "A1", "A2", "A3")
+    rows = []
+    for left_name, right_name in zip(names, names[1:], strict=False):
+        left = build_ablation_run_config(config, matrix, left_name, seed)
+        right = build_ablation_run_config(config, matrix, right_name, seed)
+        differences = [
+            {"path": path, "left": left_value, "right": right_value}
+            for path, left_value, right_value in _flattened_differences(left, right)
+        ]
+        pair_name = f"{left_name}_{right_name}"
+        observed = {difference["path"] for difference in differences}
+        if observed != set(matrix.pairwise_difference_paths[pair_name]):
+            raise ValueError(
+                f"Unexpected configuration differences for {pair_name}: {sorted(observed)}"
+            )
+        if not observed <= set(matrix.allowed_condition_difference_paths):
+            raise ValueError(f"Undeclared configuration difference for {pair_name}.")
+        rows.extend(differences)
+    return rows
+
+
+def _flattened_differences(
+    left: dict[str, Any], right: dict[str, Any], prefix: str = ""
+) -> list[tuple[str, Any, Any]]:
+    paths = []
+    for key in sorted(left.keys() | right.keys()):
+        path = f"{prefix}.{key}" if prefix else key
+        left_value, right_value = left.get(key), right.get(key)
+        if isinstance(left_value, dict) and isinstance(right_value, dict):
+            paths.extend(_flattened_differences(left_value, right_value, path))
+        elif left_value != right_value:
+            paths.append((path, left_value, right_value))
+    return paths
 
 
 def load_experiment_protocol(path: Path = PROTOCOL_PATH) -> ExperimentProtocol:

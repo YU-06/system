@@ -39,6 +39,77 @@ def patient_metrics(
     return reconstructed, binary_metrics(reconstructed, expected)
 
 
+def patient_spatial_metrics(
+    predicted: np.ndarray,
+    expected: np.ndarray,
+    spacing: tuple[float, float, float] | None,
+    spatial_unit: str | None,
+    qform: np.ndarray | None,
+    qform_code: int | None,
+    sform: np.ndarray | None,
+    sform_code: int | None,
+    affine: np.ndarray | None,
+) -> dict[str, float | str | None]:
+    result: dict[str, float | str | None] = {
+        "predicted_lesion_volume_mm3": None,
+        "ground_truth_lesion_volume_mm3": None,
+        "hd95_mm": None,
+        "assd_mm": None,
+        "spatial_status": "NotRun_untrusted_spatial_metadata",
+    }
+    if spacing is None or affine is None or spatial_unit not in {"meter", "mm", "micron"}:
+        return result
+    valid_form = any(
+        code is not None
+        and code > 0
+        and form is not None
+        and np.asarray(form).shape == (4, 4)
+        and np.isfinite(form).all()
+        and np.allclose(form, affine, rtol=0, atol=1e-5)
+        for form, code in ((qform, qform_code), (sform, sform_code))
+    )
+    if (
+        not valid_form
+        or np.asarray(affine).shape != (4, 4)
+        or not np.isfinite(affine).all()
+        or len(spacing) != 3
+        or any(not np.isfinite(value) or value <= 0 for value in spacing)
+    ):
+        return result
+    conversion = {"meter": 1000.0, "mm": 1.0, "micron": 0.001}[spatial_unit]
+    spacing_mm = tuple(float(value * conversion) for value in spacing)
+    voxel_volume = float(np.prod(spacing_mm))
+    predicted_mask = np.asarray(predicted, dtype=bool)
+    expected_mask = np.asarray(expected, dtype=bool)
+    if predicted_mask.shape != expected_mask.shape or predicted_mask.ndim != 3:
+        raise ValueError("Spatial metrics require aligned three-dimensional masks.")
+    result["predicted_lesion_volume_mm3"] = float(predicted_mask.sum() * voxel_volume)
+    result["ground_truth_lesion_volume_mm3"] = float(expected_mask.sum() * voxel_volume)
+    if not predicted_mask.any() or not expected_mask.any():
+        result["spatial_status"] = "NotRun_undefined_empty_surface"
+        return result
+    from scipy import ndimage
+
+    structure = ndimage.generate_binary_structure(3, 1)
+    predicted_surface = predicted_mask & ~ndimage.binary_erosion(
+        predicted_mask, structure=structure, border_value=0
+    )
+    expected_surface = expected_mask & ~ndimage.binary_erosion(
+        expected_mask, structure=structure, border_value=0
+    )
+    distance_to_expected = ndimage.distance_transform_edt(~expected_surface, sampling=spacing_mm)
+    distance_to_predicted = ndimage.distance_transform_edt(~predicted_surface, sampling=spacing_mm)
+    distances = np.concatenate(
+        (distance_to_expected[predicted_surface], distance_to_predicted[expected_surface])
+    )
+    result.update(
+        hd95_mm=float(np.percentile(distances, 95)),
+        assd_mm=float(np.mean(distances)),
+        spatial_status="computed_from_trusted_nifti_geometry",
+    )
+    return result
+
+
 def save_volume(mask: np.ndarray, affine: np.ndarray, output: Path) -> None:
     if mask.ndim != 3 or affine.shape != (4, 4) or not np.isfinite(affine).all():
         raise ValueError("A three-dimensional mask and finite reference affine are required.")

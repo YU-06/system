@@ -6,7 +6,12 @@ import torch
 
 from training import DISCLAIMER
 from training.datasets.brats2d import Brats2DDataset
-from training.experiment_protocol import condition_for_architecture, load_experiment_protocol
+from training.experiment_protocol import (
+    apply_ablation_condition,
+    condition_metadata,
+    load_ablation_matrix,
+    load_experiment_protocol,
+)
 from training.protocol import TrainingConfig, load_config, sha256_file, write_hashed_json
 from training.run_io import checkpoint_model, config_hash, verify_freeze
 from training.validate import EvaluationResult, evaluate_model, evaluation_report
@@ -18,12 +23,16 @@ def run_test(
     freeze = verify_freeze(freeze_path, checkpoint_path, config)
     model, checkpoint = checkpoint_model(checkpoint_path, config)
     protocol = load_experiment_protocol(Path(config.experiment_protocol_path))
-    condition_name, condition = condition_for_architecture(protocol, checkpoint["architecture"])
+    condition_name, model_version, matrix_digest = condition_metadata(
+        protocol, config, checkpoint["architecture"]
+    )
     if (
         freeze.get("architecture") != checkpoint["architecture"]
         or freeze.get("seed") != checkpoint["seed"]
-        or freeze.get("model_version") != condition.model_version
+        or freeze.get("model_version") != model_version
         or freeze.get("condition_name") != condition_name
+        or freeze.get("condition_id", "baseline") != config.condition_id
+        or freeze.get("ablation_matrix_sha256") != matrix_digest
         or freeze.get("run_id") != checkpoint.get("run_id")
         or freeze.get("evaluation_protocol") != protocol.protocol_id
         or freeze.get("preprocessing_version") != config.preprocessing_version
@@ -35,7 +44,12 @@ def run_test(
         raise FileExistsError(
             "Test outputs must use a new directory; prior evidence was not overwritten."
         )
-    dataset = Brats2DDataset(Path(config.cache_index), "test")
+    dataset = Brats2DDataset(
+        Path(config.cache_index),
+        "test",
+        input_mode=config.input_mode,
+        context_slices=config.context_slices,
+    )
     output.mkdir(parents=True)
     selected_config = TrainingConfig.model_validate(
         {**config.model_dump(), "threshold": freeze["threshold"]}
@@ -47,7 +61,8 @@ def run_test(
     report.update(
         architecture=checkpoint["architecture"],
         condition_name=condition_name,
-        model_version=condition.model_version,
+        model_version=model_version,
+        condition_id=config.condition_id,
         run_id=checkpoint["run_id"],
         seed=checkpoint["seed"],
         git_commit=freeze["git_commit"],
@@ -76,8 +91,11 @@ def main() -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--freeze", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--condition", choices=["A0", "A1", "A2", "A3"])
     arguments = parser.parse_args()
     config = load_config(arguments.config)
+    if arguments.condition:
+        config = apply_ablation_condition(config, load_ablation_matrix(), arguments.condition)
     result = run_test(config, arguments.checkpoint, arguments.freeze, arguments.output)
     print(
         f"Test processed all {len(result.patient_metrics)} frozen patients; "

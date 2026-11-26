@@ -23,6 +23,8 @@ class PatientFiles(BaseModel):
     spatial_unit: Literal["meter", "mm", "micron", "unknown"]
     qform_code: int
     sform_code: int
+    qform: list[list[float]] | None = None
+    sform: list[list[float]] | None = None
     voxel_spacing: tuple[float, float, float]
 
 
@@ -111,6 +113,15 @@ def scan_dataset(root: Path, *, synthetic: bool = False) -> DatasetScan:
                 raise ValueError("FLAIR and segmentation geometry does not match")
             if nib.aff2axcodes(image.affine)[2] not in {"S", "I"}:
                 raise ValueError("axis 2 must represent the axial direction")
+            qform, qform_code = image.header.get_qform(coded=True)
+            sform, sform_code = image.header.get_sform(coded=True)
+            for form, code in ((qform, qform_code), (sform, sform_code)):
+                if code > 0 and (
+                    form is None
+                    or not np.isfinite(form).all()
+                    or abs(np.linalg.det(form[:3, :3])) < 1e-8
+                ):
+                    raise ValueError("NIfTI spatial forms must be finite and invertible")
             volume = image.get_fdata(dtype=np.float32)
             if not np.isfinite(volume).all() or np.max(np.abs(volume), initial=0) > 1e7:
                 raise ValueError("non-finite or out-of-range FLAIR values")
@@ -121,6 +132,10 @@ def scan_dataset(root: Path, *, synthetic: bool = False) -> DatasetScan:
             voxel_spacing = tuple(
                 float(np.linalg.norm(image.affine[:3, axis])) for axis in range(3)
             )
+            if not np.allclose(
+                np.asarray(image.header.get_zooms()[:3]), voxel_spacing, rtol=0, atol=1e-4
+            ):
+                raise ValueError("NIfTI voxel spacing does not match the affine transform")
             patients.append(
                 PatientFiles(
                     patient_id=identifier,
@@ -131,8 +146,10 @@ def scan_dataset(root: Path, *, synthetic: bool = False) -> DatasetScan:
                     shape=tuple(int(value) for value in image.shape),
                     affine=image.affine.tolist(),
                     spatial_unit=spatial_unit,
-                    qform_code=int(image.header["qform_code"]),
-                    sform_code=int(image.header["sform_code"]),
+                    qform_code=int(qform_code),
+                    sform_code=int(sform_code),
+                    qform=np.asarray(qform).tolist() if qform is not None else None,
+                    sform=np.asarray(sform).tolist() if sform is not None else None,
                     voxel_spacing=voxel_spacing,
                 )
             )

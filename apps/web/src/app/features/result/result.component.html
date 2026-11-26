@@ -14,6 +14,8 @@
           <p class="warning-note" role="alert">{{ text.sourceVolumeUnavailable }}</p>
         } @else if (state.reason === 'invalidMask') {
           <p class="error-note" role="alert">{{ text.maskSpaceMismatch }}</p>
+        } @else if (state.reason === 'invalidAuxiliary') {
+          <p class="error-note" role="alert">{{ text.auxiliarySpaceMismatch }}</p>
         } @else {
           <p class="error-note" role="alert">
             {{ text.requestFailed }}
@@ -37,6 +39,13 @@
           <span
             ><strong>{{ text.preprocessingVersion }}:</strong>
             {{ state.job.preprocessingVersion || text.notAvailable }}</span
+          >
+          <span
+            ><strong>{{ text.inputMode }}:</strong>
+            {{ state.result.inputMode || text.notAvailable }}</span
+          >
+          <span
+            ><strong>{{ text.ensembleSize }}:</strong> {{ state.result.ensembleSize || 1 }}</span
           >
         </div>
         <div class="viewer-toolbar" role="group" [attr.aria-label]="text.viewerModes">
@@ -72,6 +81,26 @@
           >
             {{ text.viewContour }}
           </button>
+          @if (state.boundary) {
+            <button
+              type="button"
+              class="mode-button"
+              [attr.aria-pressed]="mode() === 'boundary'"
+              (click)="setMode('boundary')"
+            >
+              {{ text.viewBoundary }}
+            </button>
+          }
+          @if (state.uncertainty) {
+            <button
+              type="button"
+              class="mode-button"
+              [attr.aria-pressed]="mode() === 'uncertainty'"
+              (click)="setMode('uncertainty')"
+            >
+              {{ text.viewUncertainty }}
+            </button>
+          }
           <button
             type="button"
             class="mode-button"
@@ -81,6 +110,11 @@
             {{ text.viewCompare }}
           </button>
         </div>
+        @if (mode() === 'uncertainty') {
+          <div class="uncertainty-legend" role="img" [attr.aria-label]="text.uncertaintyLegend">
+            <span>0</span><span class="uncertainty-gradient"></span><span>100</span>
+          </div>
+        }
         <div class="viewer-controls">
           <label>
             <span>{{ text.layer }} {{ slice() + 1 }} / {{ state.source.depth }}</span>
@@ -206,6 +240,26 @@
             </p>
           }
         </section>
+
+        @if (state.result.uncertaintyMethod) {
+          <section class="metrics-section" aria-labelledby="uncertainty-title">
+            <h2 id="uncertainty-title">{{ text.uncertaintyTitle }}</h2>
+            <dl class="metric-grid">
+              <div>
+                <dt>{{ text.meanUncertainty }}</dt>
+                <dd>{{ state.result.meanUncertainty ?? text.notAvailable }}</dd>
+              </div>
+              <div>
+                <dt>{{ text.p95Uncertainty }}</dt>
+                <dd>{{ state.result.p95Uncertainty ?? text.notAvailable }}</dd>
+              </div>
+              <div>
+                <dt>{{ text.uncertaintyMethod }}</dt>
+                <dd>{{ state.result.uncertaintyMethod }}</dd>
+              </div>
+            </dl>
+          </section>
+        }
 
         <section class="timing-section" aria-labelledby="timing-title">
           <h2 id="timing-title">{{ text.timingTitle }}</h2>

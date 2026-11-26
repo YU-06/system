@@ -153,13 +153,24 @@ for (const relativePath of readdirSync(proxyRoot, { recursive: true })) {
   let content = ts
     .createPrinter({ newLine: ts.NewLineKind.LineFeed })
     .printFile(withUploadProgress.transformed[0]);
-  if (filePath.endsWith(path.join('research', 'brain-study.service.ts'))) {
+  if (filePath.replaceAll('\\', '/').includes('/src/app/proxy/research/brain-study.service.ts')) {
     content = content
-      .replace(/^\s+UploadBrainStudyInput,\r?\n/gm, '')
-      .replace(/^\s+UploadGroundTruthInput,\r?\n/gm, '');
+      .replaceAll('  UploadBrainStudyInput,\n', '')
+      .replaceAll('  UploadBrainStudyInput,\r\n', '')
+      .replaceAll('  UploadGroundTruthInput,\n', '')
+      .replaceAll('  UploadGroundTruthInput,\r\n', '');
   }
   const options = await prettier.resolveConfig(filePath);
   writeFileSync(filePath, await prettier.format(content, { ...options, filepath: filePath }));
+  if (filePath.replaceAll('\\', '/').includes('/src/app/proxy/research/brain-study.service.ts')) {
+    const cleaned = readFileSync(filePath, 'utf8')
+      .split(/\r?\n/)
+      .filter(
+        (line) => !line.includes('UploadBrainStudyInput') && !line.includes('UploadGroundTruthInput'),
+      )
+      .join('\n');
+    writeFileSync(filePath, cleaned);
+  }
   withUploadProgress.dispose();
   transformed.dispose();
 }

@@ -12,6 +12,22 @@ import { Injectable, inject } from '@angular/core';
 export class SegmentationResultService {
   private restService = inject(RestService);
   apiName = 'Default';
+  downloadArtifact = (
+    id: string,
+    artifactType: string,
+    cancellationToken?: unknown,
+    config?: Partial<Rest.Config>,
+  ) =>
+    this.restService.request<unknown, Blob>(
+      {
+        method: 'POST',
+        responseType: 'blob',
+        headers: { Accept: 'application/octet-stream' },
+        url: `/api/app/segmentation-result/${id}/download-artifact`,
+        params: { artifactType },
+      },
+      { apiName: this.apiName, ...config },
+    );
   downloadMask = (id: string, cancellationToken?: unknown, config?: Partial<Rest.Config>) =>
     this.restService.request<unknown, Blob>(
       {

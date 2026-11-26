@@ -12,12 +12,14 @@ import numpy as np
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict
+from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from training import DISCLAIMER
 from training.metrics import BinaryMetrics, binary_metrics, macro_metrics
-from training.preprocessing import normalize_volume, resize_image, whole_tumor_mask
+from training.preprocessing import normalize_volume, prepare_axial_context, whole_tumor_mask
 from training.reconstruct_volume import reconstruct_volume
+from training.uncertainty import brats_retention_metrics, calibration_metrics, uncertainty_to_uint8
 
 from brainseg_inference.errors import ServiceError, error_response
 from brainseg_inference.inputs import VolumeInput, ensure_same_geometry, parse_volume, read_volume
@@ -57,6 +59,23 @@ class SegmentationResponse(APIModel):
     space: str = "original"
     tumorAreaPixels: int
     tumorAreaRatio: float
+    inputMode: str = "2d"
+    contextSlices: int = 1
+    sliceFusion: str = "stack"
+    boundaryHead: bool = False
+    deepSupervision: bool = False
+    memberWeightHashes: list[str] = Field(default_factory=list)
+    probabilityArtifact: str | None = None
+    probabilitySha256: str | None = None
+    boundaryArtifact: str | None = None
+    boundarySha256: str | None = None
+    uncertaintyArtifact: str | None = None
+    uncertaintySha256: str | None = None
+    modelVarianceArtifact: str | None = None
+    modelVarianceSha256: str | None = None
+    ensembleSize: int = 1
+    meanUncertainty: float | None = None
+    p95Uncertainty: float | None = None
     timings: Timings
     disclaimer: str = DISCLAIMER
 
@@ -68,6 +87,14 @@ class ModelInfo(APIModel):
     preprocessingVersion: str
     inputSize: int
     threshold: float
+    inputMode: str = "2d"
+    contextSlices: int = 1
+    sliceFusion: str = "stack"
+    boundaryHead: bool = False
+    deepSupervision: bool = False
+    ensembleSize: int = 1
+    uncertaintyEnabled: bool = False
+    memberWeightHashes: list[str] = Field(default_factory=list)
 
 
 class ModelsResponse(APIModel):
@@ -108,6 +135,8 @@ class EvaluationResponse(APIModel):
     patientMetrics: BinaryMetrics
     sliceMacroMetrics: BinaryMetrics
     sliceCount: int
+    calibrationMetrics: dict[str, Any] | None = None
+    uncertaintyRetentionMetrics: list[dict[str, float | int | None]] | None = None
     disclaimer: str = DISCLAIMER
 
 
@@ -190,19 +219,43 @@ def _same_geometry_metadata(first: dict[str, Any], second: dict[str, Any]) -> bo
 
 
 def _serialize_mask(mask: np.ndarray, volume: VolumeInput) -> bytes:
+    return _serialize_volume(mask.astype(np.uint8), volume)
+
+
+def _serialize_volume(array: np.ndarray, volume: VolumeInput) -> bytes:
+    if array.shape != volume.volume.shape or not np.isfinite(array).all():
+        raise ServiceError(
+            "RECONSTRUCTION_FAILED", "An output could not be restored to input space.", 500
+        )
     header = volume.header.copy()
-    header.set_data_dtype(np.uint8)
+    header.set_data_dtype(array.dtype)
     header.set_slope_inter(1.0, 0.0)
     header["descrip"] = b""
     header["aux_file"] = b""
     header["intent_name"] = b""
     header.extensions.clear()
-    image = nib.Nifti1Image(mask.astype(np.uint8), volume.affine, header=header)
+    image = nib.Nifti1Image(array, volume.affine, header=header)
     qform = volume.geometry["qform"]
     sform = volume.geometry["sform"]
     image.set_qform(qform, code=volume.geometry["qformCode"])
     image.set_sform(sform, code=volume.geometry["sformCode"])
     return gzip.compress(image.to_bytes(), mtime=0)
+
+
+def _reconstruct_scalar_volume(
+    slices: np.ndarray, original_shape: tuple[int, int, int]
+) -> np.ndarray:
+    if slices.shape[0] != original_shape[2] or slices.ndim != 3:
+        raise ValueError("A scalar output is required for every axial slice.")
+    output = np.empty(original_shape, dtype=np.float32)
+    for index, values in enumerate(slices):
+        output[:, :, index] = np.asarray(
+            Image.fromarray(values.astype(np.float32)).resize(
+                (original_shape[1], original_shape[0]), Image.Resampling.BILINEAR
+            ),
+            dtype=np.float32,
+        )
+    return output
 
 
 def create_app(settings: Settings | None = None, predictor: Predictor | None = None) -> FastAPI:
@@ -344,6 +397,14 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
                     preprocessingVersion=preprocessing_version,
                     inputSize=256,
                     threshold=threshold,
+                    inputMode=runtime.input_mode,
+                    contextSlices=runtime.context_slices,
+                    sliceFusion=runtime.slice_fusion,
+                    boundaryHead=runtime.boundary_head,
+                    deepSupervision=runtime.deep_supervision,
+                    ensembleSize=runtime.ensemble_size,
+                    uncertaintyEnabled=runtime.uncertainty_enabled,
+                    memberWeightHashes=runtime.member_weight_hashes,
                 )
             )
         return ModelsResponse(
@@ -391,14 +452,26 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
         started = time.perf_counter()
         normalized = normalize_volume(volume.volume)
         slices = np.stack(
-            [resize_image(normalized[:, :, index], 256) for index in range(volume.volume.shape[2])]
+            [
+                prepare_axial_context(
+                    normalized,
+                    index,
+                    256,
+                    runtime.context_slices,
+                )
+                for index in range(volume.volume.shape[2])
+            ]
         ).astype(np.float32, copy=False)
         preprocessed = time.perf_counter()
-        logits, model_forward_ms = await runtime.predict(slices)
+        prediction = await runtime.predict_outputs(slices)
         inferred = time.perf_counter()
-        if logits.shape != slices.shape or not np.isfinite(logits).all():
+        probabilities = prediction.mean_probability
+        if (
+            probabilities.shape != (volume.volume.shape[2], 256, 256)
+            or not np.isfinite(probabilities).all()
+            or np.any((probabilities < 0) | (probabilities > 1))
+        ):
             raise ServiceError("MODEL_OUTPUT_INVALID", "The model output contract is invalid.", 500)
-        probabilities = 1 / (1 + np.exp(-np.clip(logits, -80, 80)))
         masks = (probabilities >= threshold).astype(np.uint8)
         predictions = {index: mask for index, mask in enumerate(masks)}
         reconstructed = reconstruct_volume(predictions, tuple(volume.volume.shape))
@@ -406,7 +479,61 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             raise ServiceError(
                 "RECONSTRUCTION_FAILED", "The prediction could not be restored to input space.", 500
             )
-        payload = _serialize_mask(reconstructed, volume)
+        probability_volume: np.ndarray | None = None
+        boundary_volume: np.ndarray | None = None
+        uncertainty_volume: np.ndarray | None = None
+        model_variance_volume: np.ndarray | None = None
+        if runtime.optional_artifacts_enabled:
+            probability_volume = _reconstruct_scalar_volume(
+                probabilities, tuple(volume.volume.shape)
+            )
+        if prediction.boundary_probability is not None:
+            if (
+                prediction.boundary_probability.shape != probabilities.shape
+                or not np.isfinite(prediction.boundary_probability).all()
+                or np.any(
+                    (prediction.boundary_probability < 0) | (prediction.boundary_probability > 1)
+                )
+            ):
+                raise ServiceError(
+                    "MODEL_OUTPUT_INVALID", "The boundary output contract is invalid.", 500
+                )
+            boundary_masks = (prediction.boundary_probability >= 0.5).astype(np.uint8)
+            boundary_volume = reconstruct_volume(
+                {index: mask for index, mask in enumerate(boundary_masks)},
+                tuple(volume.volume.shape),
+            )
+        elif runtime.boundary_head:
+            raise ServiceError(
+                "MODEL_OUTPUT_INVALID", "The declared boundary output is missing.", 500
+            )
+        if prediction.model_variance is not None:
+            if (
+                prediction.model_variance.shape != probabilities.shape
+                or not np.isfinite(prediction.model_variance).all()
+                or np.any(prediction.model_variance < 0)
+                or np.any(prediction.model_variance > 0.25)
+            ):
+                raise ServiceError(
+                    "MODEL_OUTPUT_INVALID", "The ensemble variance output is invalid.", 500
+                )
+            model_variance_volume = _reconstruct_scalar_volume(
+                prediction.model_variance, tuple(volume.volume.shape)
+            )
+        if runtime.uncertainty_enabled:
+            scale = runtime.uncertainty_scale_max
+            if scale is None:
+                raise ServiceError(
+                    "MODEL_MANIFEST_INVALID",
+                    "The uncertainty scale is unavailable.",
+                    503,
+                )
+            uncertainty_slices = uncertainty_to_uint8(prediction.predictive_entropy, scale)
+            uncertainty_volume = _reconstruct_scalar_volume(
+                uncertainty_slices.astype(np.float32) / 100,
+                tuple(volume.volume.shape),
+            )
+            uncertainty_volume = np.rint(np.clip(uncertainty_volume, 0, 1) * 100).astype(np.uint8)
         manifest = runtime.manifest
         artifact_metadata = {
             "modelVersion": model_version,
@@ -419,10 +546,81 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             "geometry": volume.geometry,
             "modelManifestSha256": runtime.manifest_sha256,
             "modelWeightSha256": manifest.weight_sha256 if manifest else None,
+            "memberWeightHashes": runtime.member_weight_hashes,
+            "inputMode": runtime.input_mode,
+            "contextSlices": runtime.context_slices,
+            "sliceFusion": runtime.slice_fusion,
+            "boundaryHead": runtime.boundary_head,
+            "deepSupervision": runtime.deep_supervision,
+            "ensembleSize": runtime.ensemble_size,
+            "uncertaintyMethod": (
+                manifest.uncertainty_method if manifest and runtime.uncertainty_enabled else None
+            ),
             "correlationId": correlation_id.get(),
             "requestId": request_id,
         }
         try:
+            probability_artifact = (
+                storage.put_auxiliary(
+                    _serialize_volume(probability_volume.astype(np.float32), volume),
+                    artifact_metadata,
+                    "probability",
+                )
+                if probability_volume is not None
+                else None
+            )
+            boundary_artifact = (
+                storage.put_auxiliary(
+                    _serialize_volume(boundary_volume.astype(np.uint8), volume),
+                    artifact_metadata,
+                    "boundary",
+                )
+                if boundary_volume is not None
+                else None
+            )
+            uncertainty_artifact = (
+                storage.put_auxiliary(
+                    _serialize_volume(uncertainty_volume.astype(np.uint8), volume),
+                    artifact_metadata,
+                    "uncertainty",
+                )
+                if uncertainty_volume is not None
+                else None
+            )
+            model_variance_artifact = (
+                storage.put_auxiliary(
+                    _serialize_volume(model_variance_volume.astype(np.float32), volume),
+                    artifact_metadata,
+                    "model_variance",
+                )
+                if model_variance_volume is not None
+                else None
+            )
+            artifact_metadata["probabilityObjectKey"] = (
+                probability_artifact.object_key if probability_artifact else None
+            )
+            artifact_metadata["probabilitySha256"] = (
+                probability_artifact.sha256 if probability_artifact else None
+            )
+            artifact_metadata["boundaryObjectKey"] = (
+                boundary_artifact.object_key if boundary_artifact else None
+            )
+            artifact_metadata["boundarySha256"] = (
+                boundary_artifact.sha256 if boundary_artifact else None
+            )
+            artifact_metadata["uncertaintyObjectKey"] = (
+                uncertainty_artifact.object_key if uncertainty_artifact else None
+            )
+            artifact_metadata["uncertaintySha256"] = (
+                uncertainty_artifact.sha256 if uncertainty_artifact else None
+            )
+            artifact_metadata["modelVarianceObjectKey"] = (
+                model_variance_artifact.object_key if model_variance_artifact else None
+            )
+            artifact_metadata["modelVarianceSha256"] = (
+                model_variance_artifact.sha256 if model_variance_artifact else None
+            )
+            payload = _serialize_mask(reconstructed, volume)
             artifact = storage.put_prediction(payload, artifact_metadata)
         except OSError as error:
             raise ServiceError(
@@ -449,9 +647,36 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             maskShape=list(reconstructed.shape),
             tumorAreaPixels=area,
             tumorAreaRatio=area / reconstructed.size,
+            inputMode=runtime.input_mode,
+            contextSlices=runtime.context_slices,
+            sliceFusion=runtime.slice_fusion,
+            boundaryHead=runtime.boundary_head,
+            deepSupervision=runtime.deep_supervision,
+            memberWeightHashes=runtime.member_weight_hashes,
+            probabilityArtifact=(probability_artifact.object_key if probability_artifact else None),
+            probabilitySha256=probability_artifact.sha256 if probability_artifact else None,
+            boundaryArtifact=boundary_artifact.object_key if boundary_artifact else None,
+            boundarySha256=boundary_artifact.sha256 if boundary_artifact else None,
+            uncertaintyArtifact=(uncertainty_artifact.object_key if uncertainty_artifact else None),
+            uncertaintySha256=uncertainty_artifact.sha256 if uncertainty_artifact else None,
+            modelVarianceArtifact=(
+                model_variance_artifact.object_key if model_variance_artifact else None
+            ),
+            modelVarianceSha256=(
+                model_variance_artifact.sha256 if model_variance_artifact else None
+            ),
+            ensembleSize=runtime.ensemble_size,
+            meanUncertainty=(
+                float(np.mean(uncertainty_volume)) if uncertainty_volume is not None else None
+            ),
+            p95Uncertainty=(
+                float(np.percentile(uncertainty_volume, 95))
+                if uncertainty_volume is not None
+                else None
+            ),
             timings=Timings(
                 preprocessingMilliseconds=(preprocessed - started) * 1000,
-                inferenceMilliseconds=model_forward_ms,
+                inferenceMilliseconds=prediction.forward_milliseconds,
                 postprocessingMilliseconds=(completed - inferred) * 1000,
             ),
         )
@@ -491,6 +716,28 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             content=payload,
             media_type="application/gzip",
             headers={"X-Prediction-Sha256": digest},
+        )
+
+    @application.get(
+        "/v1/artifacts/{artifact_object_key}",
+        responses=ERROR_RESPONSES,
+        tags=["Segmentation"],
+        dependencies=[Depends(require_service_auth)],
+    )
+    async def download_auxiliary_artifact(artifact_object_key: str) -> Response:
+        payload, metadata, digest = storage.read_prediction(artifact_object_key)
+        artifact_type = metadata.get("artifactType")
+        if artifact_type not in {"probability", "boundary", "uncertainty", "model_variance"}:
+            raise ServiceError(
+                "INVALID_ARTIFACT_TYPE", "The requested auxiliary artifact is unavailable.", 404
+            )
+        return Response(
+            content=payload,
+            media_type="application/gzip",
+            headers={
+                "X-Artifact-Sha256": digest,
+                "X-Artifact-Type": artifact_type,
+            },
         )
 
     @application.post(
@@ -551,6 +798,63 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             binary_metrics(predicted[:, :, index], expected[:, :, index])
             for index in range(predicted.shape[2])
         ]
+        calibration = None
+        retention = None
+        probability_key = artifact_metadata.get("probabilityObjectKey")
+        uncertainty_key = artifact_metadata.get("uncertaintyObjectKey")
+        if isinstance(probability_key, str) and isinstance(uncertainty_key, str):
+            probability_payload, probability_metadata, _ = storage.read_prediction(probability_key)
+            uncertainty_payload, uncertainty_metadata, _ = storage.read_prediction(uncertainty_key)
+            if (
+                probability_metadata.get("artifactType") != "probability"
+                or uncertainty_metadata.get("artifactType") != "uncertainty"
+                or probability_metadata.get("requestId") != artifact_metadata.get("requestId")
+                or uncertainty_metadata.get("requestId") != artifact_metadata.get("requestId")
+                or probability_metadata.get("inputSha256") != source.sha256
+                or uncertainty_metadata.get("inputSha256") != source.sha256
+                or not _same_geometry_metadata(
+                    source.geometry, probability_metadata.get("geometry", {})
+                )
+                or not _same_geometry_metadata(
+                    source.geometry, uncertainty_metadata.get("geometry", {})
+                )
+            ):
+                raise ServiceError(
+                    "AUXILIARY_ARTIFACT_INVALID",
+                    "An auxiliary prediction artifact failed its traceability checks.",
+                    409,
+                )
+            probability_volume = parse_volume(probability_payload, probability_key, settings)
+            uncertainty_volume = parse_volume(uncertainty_payload, uncertainty_key, settings)
+            if (
+                not _same_geometry_metadata(source.geometry, probability_volume.geometry)
+                or not _same_geometry_metadata(source.geometry, uncertainty_volume.geometry)
+                or probability_volume.volume.shape != source.volume.shape
+                or uncertainty_volume.volume.shape != source.volume.shape
+            ):
+                raise ServiceError(
+                    "AUXILIARY_ALIGNMENT_INVALID",
+                    "Auxiliary artifacts must match the input volume geometry.",
+                    409,
+                )
+            probabilities = probability_volume.volume.astype(np.float32)
+            uncertainty = uncertainty_volume.volume.astype(np.float32)
+            if (
+                not np.isfinite(probabilities).all()
+                or np.any((probabilities < 0) | (probabilities > 1))
+                or not np.isin(uncertainty_volume.volume, np.arange(101)).all()
+            ):
+                raise ServiceError(
+                    "AUXILIARY_ARTIFACT_INVALID",
+                    "An auxiliary prediction artifact contains invalid values.",
+                    409,
+                )
+            calibration = calibration_metrics(probabilities, expected, uncertainty)
+            retention = brats_retention_metrics(
+                predicted,
+                expected,
+                uncertainty_volume.volume.astype(np.float32),
+            )
         return EvaluationResponse(
             modelVersion=str(artifact_metadata["modelVersion"]),
             architecture=str(artifact_metadata["architecture"]),
@@ -569,6 +873,8 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             patientMetrics=binary_metrics(predicted, expected),
             sliceMacroMetrics=macro_metrics(slices),
             sliceCount=len(slices),
+            calibrationMetrics=calibration,
+            uncertaintyRetentionMetrics=retention,
         )
 
     return application

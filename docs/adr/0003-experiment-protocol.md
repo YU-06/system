@@ -39,3 +39,11 @@
 ## 后果
 
 研究结论可以复现并检查泄漏、数据缺口及模型差异；但需要所有真实实验运行和完整审计产物才能解锁正式表图。当前仓库未随代码生成 BraTS 训练结果，真实实验成绩仍为 `NotRun`。
+
+## 2.5D 与边界消融扩展
+
+[`ml/configs/ablation_matrix.yaml`](../../ml/configs/ablation_matrix.yaml) 预注册 A0—A3：A0=2D U-Net；A1=2D Attention U-Net；A2=A1 加 `context_slices=3` 的 center-attention；A3=A2 加边界头和一个深监督辅助分割头。相邻条件的变更由配置校验器限定；训练控制变量、患者划分与 17/42/2024 配对种子不因消融条件改变。2.5D 邻层索引首尾 clamp，不环绕，且只对中心层使用 GT。
+
+A3 的 region 项为 0.5 BCEWithLogits + 0.5 Soft Dice，总损失为 region + YAML 配置的 0.2 auxiliary loss + 0.1 edge loss。边界标签使用中心层掩膜的 dilate-erode，默认半径 1。输出中的 attention weights 供诊断，不改变评价单位。
+
+当登记多个 checkpoint 时，先平均概率再应用冻结阈值；熵缩放只从验证集确定。多成员方差与预测熵分开保存；单成员模式不生成模型间方差。无 GT 时不返回准确性、校准或保留体素结果。相关实现、限制及 NotRun 状态见 [ADR 0010](0010-2p5d-boundary-uncertainty.md)。

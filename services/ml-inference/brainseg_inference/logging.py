@@ -16,7 +16,14 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
             "CorrelationId": correlation_id.get(),
         }
-        for key in ("errorCode", "method", "path", "statusCode", "durationMilliseconds"):
+        for key in (
+            "errorCode",
+            "diagnosticType",
+            "method",
+            "path",
+            "statusCode",
+            "durationMilliseconds",
+        ):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value

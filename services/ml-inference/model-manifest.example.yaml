@@ -1,0 +1,9 @@
+manifestVersion: 1
+modelVersion: synthetic-not-research
+architecture: UNet
+preprocessingVersion: flair-v1
+inputSize: 256
+threshold: 0.5
+weightFile: synthetic-fixture.onnx
+weightSha256: "0000000000000000000000000000000000000000000000000000000000000000"
+artifactKind: synthetic_test

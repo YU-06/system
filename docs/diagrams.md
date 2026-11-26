@@ -18,8 +18,14 @@ flowchart LR
   ABP -->|authenticated internal HTTP + CorrelationId| FastAPI[FastAPI inference]
   FastAPI --> ONNX[ONNX Runtime CPU]
   FastAPI --> Objects[(Inference receipt/prediction volume)]
-  Training[Python + PyTorch training] --> Shared[Versioned flair-v1 preprocessing]
+  Training[Python + PyTorch training] --> Shared[Versioned flair-v1 normalization / axial context]
   FastAPI --> Shared
+  Shared --> Context[2D or clamped 2.5D center slice windows]
+  Context --> Fusion[Shared stem + center-conditioned slice attention]
+  Fusion --> Decoder[U-Net / Attention U-Net]
+  Decoder --> Heads[WT logits + optional boundary / auxiliary heads]
+  Heads --> Ensemble[Mean probability + entropy + member variance]
+  Ensemble --> FastAPI
   Training --> Evidence[Hashed runs / freeze / paper reports]
 ```
 
@@ -61,11 +67,13 @@ sequenceDiagram
   API->>Store: Stream object, compute SHA-256
   Worker->>DB: Atomically claim Pending Job with lease
   Worker->>ML: POST /v1/segment with stable requestId
-  ML-->>Worker: Prediction key, hash, model provenance and timings
+  ML-->>Worker: Mask and optional probability/boundary/uncertainty/variance keys + hashes
   Worker->>ML: Fetch prediction by generated object key
-  Worker->>Store: Save generated mask and preview objects
-  Worker->>DB: Validate claim and write one result/terminal state
+  Worker->>ML: Fetch optional auxiliary artifacts with same CorrelationId
+  Worker->>Store: Save generated mask and auxiliary objects
+  Worker->>DB: Validate claim and persist hashes, ensemble and provenance
   User->>API: Authorized result query/download
+  Web->>API: Download optional aligned boundary/uncertainty NIfTI layers
   User->>API: Register GT and request separate evaluation
   API->>ML: POST /v1/evaluate with stored object references
   ML-->>API: Metrics + source/label/prediction hashes

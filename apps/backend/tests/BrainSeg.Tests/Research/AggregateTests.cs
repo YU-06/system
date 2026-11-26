@@ -63,6 +63,28 @@ public class AggregateTests
     }
 
     [Fact]
+    public void Result_uncertainty_artifacts_require_paired_hashes_and_valid_context_provenance()
+    {
+        Assert.Throws<BusinessException>(() => new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(),
+            ObjectKey(), Hash, null, null, 0, 0, 0, 0, 0, Now,
+            probabilityObjectKey: ObjectKey()));
+        Assert.Throws<BusinessException>(() => new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(),
+            ObjectKey(), Hash, null, null, 0, 0, 0, 0, 0, Now,
+            inputMode: "2p5d", contextSlices: 2, sliceFusion: "center_attention"));
+
+        var result = new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(), ObjectKey(), Hash,
+            null, null, 0, 0, 0, 0, 0, Now,
+            uncertaintyObjectKey: ObjectKey(), uncertaintySha256: Hash,
+            inputMode: "2p5d", contextSlices: 3, sliceFusion: "center_attention",
+            memberWeightHashesJson: $"[\"{Hash}\"]", ensembleSize: 1,
+            uncertaintyMethod: "predictive_entropy-v1", meanUncertainty: 5, p95Uncertainty: 20);
+        Assert.Equal("2p5d", result.InputMode);
+        Assert.Equal(3, result.ContextSlices);
+        Assert.Equal(5, result.MeanUncertainty);
+        Assert.Null(result.Dice);
+    }
+
+    [Fact]
     public void Invalid_paths_hashes_models_and_metrics_are_rejected()
     {
         Assert.Throws<BusinessException>(() => new BrainStudy(Guid.NewGuid(), "S-1", "case-1",

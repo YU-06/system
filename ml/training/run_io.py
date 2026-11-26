@@ -14,8 +14,12 @@ import yaml
 
 from training import DISCLAIMER
 from training.create_split import load_split
-from training.experiment_protocol import load_experiment_protocol, protocol_sha256
-from training.models import UNet, build_model
+from training.experiment_protocol import (
+    ablation_matrix_sha256,
+    load_experiment_protocol,
+    protocol_sha256,
+)
+from training.models import build_model
 from training.preprocess import CacheManifest, load_cache
 from training.protocol import (
     TrainingConfig,
@@ -107,15 +111,38 @@ def load_checkpoint(path: Path, config: TrainingConfig) -> dict:
     if (
         checkpoint.get("architecture") not in config.architectures
         or checkpoint.get("seed") not in config.experiment_seeds
+        or checkpoint.get("condition_id", "baseline") != config.condition_id
     ):
-        raise ValueError("Checkpoint architecture or seed is outside the configured protocol.")
+        raise ValueError("Checkpoint model, condition or seed is outside the configured protocol.")
+    model_contract = {
+        "input_mode": config.input_mode,
+        "context_slices": config.context_slices,
+        "slice_fusion": config.slice_fusion,
+        "boundary_head": config.boundary_head,
+        "deep_supervision": config.deep_supervision,
+    }
+    if any(checkpoint.get(key, value) != value for key, value in model_contract.items()):
+        raise ValueError("Checkpoint model input or auxiliary-head contract changed.")
+    if (
+        config.condition_id != "baseline"
+        and checkpoint.get("ablation_matrix_sha256") != ablation_matrix_sha256()
+    ):
+        raise ValueError("Checkpoint ablation matrix provenance changed.")
     return checkpoint
 
 
-def checkpoint_model(path: Path, config: TrainingConfig) -> tuple[UNet, dict]:
+def checkpoint_model(path: Path, config: TrainingConfig) -> tuple[torch.nn.Module, dict]:
     checked_cache(config)
     checkpoint = load_checkpoint(path, config)
-    model = build_model(checkpoint["architecture"], config.channels)
+    model = build_model(
+        checkpoint["architecture"],
+        config.channels,
+        input_mode=config.input_mode,
+        context_slices=config.context_slices,
+        slice_fusion=config.slice_fusion,
+        boundary_head=config.boundary_head,
+        deep_supervision=config.deep_supervision,
+    )
     model.load_state_dict(checkpoint["model_state"], strict=True)
     return model, checkpoint
 
@@ -135,6 +162,12 @@ def initialize_run(directory: Path, config: TrainingConfig) -> None:
     (directory / "split_manifest.json.sha256").write_text(
         sha256_file(split_path) + "\n", encoding="ascii"
     )
+    if config.condition_id != "baseline":
+        matrix_path = Path("ml/configs/ablation_matrix.yaml")
+        (directory / "ablation_matrix.yaml").write_bytes(matrix_path.read_bytes())
+        (directory / "ablation_matrix.yaml.sha256").write_text(
+            ablation_matrix_sha256(matrix_path) + "\n", encoding="ascii"
+        )
     environment = {
         "python": platform.python_version(),
         "torch": torch.__version__,
@@ -162,8 +195,15 @@ def reconcile_history(path: Path, checkpoint: dict, fields: list[str]) -> None:
     with path.open(encoding="utf-8", newline="") as stream:
         rows = list(csv.DictReader(stream))
     completed = int(checkpoint["epoch"])
-    committed = {int(row["epoch"]): row for row in rows if int(row["epoch"]) <= completed}
-    committed[completed] = checkpoint["epoch_metrics"]
+    committed = {
+        int(row["epoch"]): {**row, **{key: "NotRun" for key in fields if key not in row}}
+        for row in rows
+        if int(row["epoch"]) <= completed
+    }
+    committed[completed] = {
+        **checkpoint["epoch_metrics"],
+        **{key: "NotRun" for key in fields if key not in checkpoint["epoch_metrics"]},
+    }
     if set(committed) != set(range(1, completed + 1)):
         raise ValueError("Checkpoint history is incomplete; missing epochs cannot be fabricated.")
     with path.open("w", encoding="utf-8", newline="") as stream:
@@ -206,6 +246,11 @@ def verify_freeze(path: Path, checkpoint_path: Path, config: TrainingConfig) -> 
         raise ValueError(f"Protocol freeze is incomplete: {sorted(missing)}")
     checkpoint = load_checkpoint(checkpoint_path, config)
     protocol = load_experiment_protocol(Path(config.experiment_protocol_path))
+    expected_matrix_sha = ablation_matrix_sha256() if config.condition_id != "baseline" else None
+    if freeze.get("condition_id", "baseline") != config.condition_id:
+        raise ValueError("Frozen ablation condition differs from the selected configuration.")
+    if freeze.get("ablation_matrix_sha256") != expected_matrix_sha:
+        raise ValueError("Frozen ablation matrix provenance changed.")
     expected = {
         "config_hash": config_hash(config),
         "split_sha256": sha256_file(Path(config.split_manifest)),
@@ -301,8 +346,20 @@ def verify_freeze(path: Path, checkpoint_path: Path, config: TrainingConfig) -> 
         raise ValueError(
             "Selected validation score does not match reconstructed patient-level Dice."
         )
-    for key in ("run_id", "architecture", "condition_name", "model_version", "seed", "git_commit"):
-        if freeze[key] != checkpoint.get(key):
+    for key in (
+        "run_id",
+        "architecture",
+        "condition_name",
+        "condition_id",
+        "model_version",
+        "seed",
+        "git_commit",
+    ):
+        frozen_value = freeze.get(key, "baseline") if key == "condition_id" else freeze[key]
+        checkpoint_value = (
+            checkpoint.get(key, "baseline") if key == "condition_id" else checkpoint.get(key)
+        )
+        if frozen_value != checkpoint_value:
             raise ValueError(f"Protocol freeze {key} does not match the checkpoint.")
     if freeze["model_weight_sha256"] != checkpoint["model_weight_sha256"]:
         raise ValueError("Frozen model-weight digest does not match the checkpoint tensor state.")
@@ -316,6 +373,8 @@ def verify_freeze(path: Path, checkpoint_path: Path, config: TrainingConfig) -> 
         or report.get("protocol_sha256") != freeze["protocol_sha256"]
         or report.get("evaluation_protocol") != freeze["evaluation_protocol"]
         or report.get("data_kind") != freeze["data_kind"]
+        or report.get("condition_id", "baseline") != config.condition_id
+        or report.get("ablation_matrix_sha256") != expected_matrix_sha
     ):
         raise ValueError("Validation evidence does not match the frozen threshold selection.")
     return freeze

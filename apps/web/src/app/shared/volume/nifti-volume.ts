@@ -235,12 +235,29 @@ export function renderSlice(
   canvas: HTMLCanvasElement,
   source: AxialVolume,
   slice: number,
-  mode: 'source' | 'mask' | 'overlay' | 'contour',
+  mode: 'source' | 'mask' | 'overlay' | 'contour' | 'boundary' | 'uncertainty',
   mask: AxialVolume | undefined,
   opacity: number,
+  boundary?: AxialVolume,
+  uncertainty?: AxialVolume,
 ): void {
-  if (slice < 0 || slice >= source.depth || (mask && !sameGrid(source, mask))) {
+  if (
+    slice < 0 ||
+    slice >= source.depth ||
+    (mask && !sameGrid(source, mask)) ||
+    (boundary && !sameGrid(source, boundary)) ||
+    (uncertainty && !sameGrid(source, uncertainty)) ||
+    (mode === 'boundary' && !boundary) ||
+    (mode === 'uncertainty' && !uncertainty)
+  ) {
     throw new Error('sliceUnavailable');
+  }
+  if (
+    uncertainty &&
+    mode === 'uncertainty' &&
+    uncertainty.voxels.some((value) => !Number.isFinite(value) || value < 0 || value > 100)
+  ) {
+    throw new Error('invalidUncertainty');
   }
   canvas.width = source.width;
   canvas.height = source.height;
@@ -260,7 +277,20 @@ export function renderSlice(
       let green = mode === 'mask' ? (foreground ? 255 : 0) : gray;
       let blue = mode === 'mask' ? (foreground ? 255 : 0) : gray;
 
-      if (mode === 'overlay' && foreground) {
+      if (mode === 'uncertainty' && uncertainty) {
+        const value = voxelAt(uncertainty, x, y, slice);
+        const scaled = value / 100;
+        const heatRed = Math.round(255 * scaled);
+        const heatGreen = Math.round(255 * (1 - Math.abs(scaled - 0.5) * 2));
+        const heatBlue = Math.round(255 * (1 - scaled));
+        red = Math.round(gray * (1 - opacity) + heatRed * opacity);
+        green = Math.round(gray * (1 - opacity) + heatGreen * opacity);
+        blue = Math.round(gray * (1 - opacity) + heatBlue * opacity);
+      } else if (mode === 'boundary' && boundary && voxelAt(boundary, x, y, slice) > 0) {
+        red = Math.round(gray * (1 - opacity) + 255 * opacity);
+        green = Math.round(gray * (1 - opacity) + 176 * opacity);
+        blue = Math.round(gray * (1 - opacity) + 0 * opacity);
+      } else if (mode === 'overlay' && foreground) {
         red = Math.round(gray * (1 - opacity) + 225 * opacity);
         green = Math.round(gray * (1 - opacity) + 72 * opacity);
         blue = Math.round(gray * (1 - opacity) + 72 * opacity);

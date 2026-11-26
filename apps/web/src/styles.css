@@ -706,6 +706,20 @@ th {
   width: 100%;
   accent-color: var(--accent);
 }
+.uncertainty-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  margin: 8px 0;
+  font-variant-numeric: tabular-nums;
+}
+.uncertainty-gradient {
+  flex: 1;
+  height: 12px;
+  border: 1px solid #68736d;
+  background: linear-gradient(90deg, #0000ff, #00ff00, #ff0000);
+}
 .slice-stage {
   min-height: 240px;
   overflow: auto;

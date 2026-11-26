@@ -15,17 +15,20 @@ All `/v1/*` data endpoints require `Authorization: Bearer <ML_SERVICE_API_KEY>`.
 | `GET /models` | The single loaded model descriptor or an empty list when not ready. |
 | `POST /v1/segment` | Multipart fields `file` and stable `requestId`: full T2-FLAIR volume. Returns a system-generated `predictionObjectKey`, prediction SHA-256, original-space dimensions and provenance. |
 | `GET /v1/predictions/{predictionObjectKey}` | Authenticated download of the generated binary NIfTI prediction and its SHA-256 response header. |
+| `GET /v1/artifacts/{artifactObjectKey}` | Authenticated download of a registered probability, boundary, uncertainty, or ensemble-variance NIfTI artifact. |
 | `POST /v1/evaluate` | Multipart fields `file`, `label`, `predictionObjectKey`, and optional `evaluationProtocol` (only `whole-tumor-v1`). Requires the original source volume and a previously generated prediction object reference. |
 
-`/v1/segment` normalizes the non-zero brain region using shared `flair-v1` preprocessing, resizes each axis-2 slice using the training interpolation rules, runs batched model inference, thresholds with the value frozen in the model manifest, and restores binary slices to the source array shape with nearest-neighbour interpolation. Axis 2 must be axial (`S`/`I`) as in the training data pipeline; the service rejects other orientations rather than silently reorienting them. Affine-derived spacing must agree with the NIfTI header. The resulting NIfTI retains the original affine, qform/sform codes and spatial units. No accuracy metric is returned by segmentation.
+`/v1/segment` normalizes the non-zero brain region using shared `flair-v1` preprocessing. A 2D model receives `[N,1,256,256]`; a 2.5D model receives clamped axial context windows `[N,S,256,256]`, with only the center slice represented in the output. It runs batched model inference, thresholds the mean member probability with the value frozen in the model manifest, and restores masks to the source array shape with nearest-neighbour interpolation. Scalar probability, boundary, variance, and uncertainty maps use bilinear in-plane restoration. Axis 2 must be axial (`S`/`I`) as in the training data pipeline; other orientations are rejected rather than silently reoriented. Affine-derived spacing must agree with the NIfTI header. Every NIfTI output retains the original shape, affine, qform/sform codes, spacing and spatial units. Segmentation does not return accuracy metrics.
+
+The optional response artifact fields are null when that output is not available. Multi-checkpoint inference averages probabilities before thresholding; `modelVarianceArtifact` is absent for a single checkpoint. Predictive entropy is scaled to uint8 [0,100] using the frozen validation-derived manifest scale. A test double remains marked `synthetic_test` and is not accepted by a research manifest.
 
 Prediction keys are deterministic UUIDs derived from `requestId`. A receipt and prediction sidecar make retries return the same response and object, including recovery when a process stopped after object persistence but before receipt persistence. Reuse with a different input hash returns `409 IDEMPOTENCY_CONFLICT`; no duplicate prediction object is created for the same request identifier.
 
-`/v1/evaluate` maps BraTS labels 1, 2 and 4 to foreground and label 0 to background. It verifies source, label, and stored prediction shapes, axis directions, voxel spacing, affine, qform/sform and units before calculating patient-volume metrics and the arithmetic mean of per-slice metrics. It rejects mismatches; it never silently resamples. Empty GT and empty prediction produce Dice/IoU/Precision/Recall of 1; exactly one empty mask produces 0, following the shared training metric implementation. The response echoes request id, model weight hash, manifest hash, source/GT/prediction hashes, model/processing versions and correlation ID for ABP to validate before recording metrics.
+`/v1/evaluate` maps BraTS labels 1, 2 and 4 to foreground and label 0 to background. It verifies source, label, and stored prediction shapes, axis directions, voxel spacing, affine, qform/sform and units before calculating patient-volume metrics and the arithmetic mean of per-slice metrics. It rejects mismatches; it never silently resamples. When traceable probability and uncertainty artifacts exist, evaluation additionally returns Brier score, ECE, uncertainty-error AUROC/AUPRC and risk-coverage; BraTS-style retained-voxel results are separately named. If no GT is supplied, evaluation is not called and no accuracy/calibration metrics are emitted. Empty GT and empty prediction produce Dice/IoU/Precision/Recall of 1; exactly one empty mask produces 0, following the shared training metric implementation. A zero-coverage retained set has undefined Dice (`null`), not a success-shaped zero. The response echoes request id, member weight hashes, manifest hash, source/GT/prediction hashes, model/processing versions and correlation ID for ABP to validate before recording metrics.
 
 ## Manifest and model verification
 
-`ML_MODEL_MANIFEST_PATH` points to a deployment-controlled YAML manifest. `weightFile` must be a basename in the manifest directory; it cannot be a path or URL. The service checks the manifest schema/version, weight SHA-256, architecture (`UNet` or `AttentionUNet`), preprocessing version, 256 input size, threshold, and matching ONNX custom metadata:
+`ML_MODEL_MANIFEST_PATH` points to a deployment-controlled YAML manifest. Every member weight file must be a basename in the manifest directory; paths and URLs are rejected. The service checks the manifest schema/version, every member SHA-256, architecture (`UNet` or `AttentionUNet`), input mode, odd context size, fusion, preprocessing version, 256 input size, threshold, optional heads, uncertainty method and frozen scale, and matching ONNX custom metadata:
 
 | ONNX custom metadata key | Required value |
 | --- | --- |
@@ -33,18 +36,20 @@ Prediction keys are deterministic UUIDs derived from `requestId`. A receipt and 
 | `brainseg.preprocessing_version` | Manifest preprocessing version |
 | `brainseg.input_size` | Manifest input size |
 | `brainseg.threshold` | Manifest threshold |
+| 2.5D model | `brainseg.input_mode`, `brainseg.context_slices`, and `brainseg.slice_fusion` |
+| Declared output heads | `boundary_logits` and/or `aux_logits` ONNX output names |
 
 Only manifests with `artifactKind: research` may become ready. Synthetic test artifacts are rejected at startup and can never be advertised as research weights. The tracked [`model-manifest.example.yaml`](../../services/ml-inference/model-manifest.example.yaml) is explicitly synthetic and non-operational. No real model weights or research inference outputs are included in this repository.
 
-The ONNX Runtime CPU path is the existing inference backend. Model input is float32 `[N,1,256,256]`; output is finite float32 logits `[N,1,256,256]`. A fixed batch dimension of one is supported; otherwise batch dimensions must be dynamic. The maximum runtime batch size is configurable and bounded.
+The ONNX Runtime CPU path is the existing inference backend. Model input is float32 `[N,C,256,256]`, where `C=1` for 2D and `C=contextSlices` for 2.5D; segmentation and boundary outputs are finite float32 `[N,1,256,256]` logits. A fixed batch dimension of one is supported; otherwise batch dimensions must be dynamic. The maximum runtime batch size is configurable and bounded.
 
 ## Resource, privacy, and timing boundaries
 
 - Defaults: 64 MiB uploaded file, 128 MiB decompressed NIfTI, 16,777,216 voxels, maximum dimension 512, and 16 slices per dynamic ONNX batch. Configurable values also have hard caps (256 MiB upload, 512 MiB decompressed, 67,108,864 voxels, dimension 2,048, 128 slices per batch, and 300 seconds). HTTP body size is bounded for multipart overhead.
 - Only one model-forward job runs at a time. The inference deadline covers waiting for the inference slot and all forward batches; timed-out work is not reported as successful.
-- `preprocessingMilliseconds`: shared volume normalization and 2D slice resizing.
+- `preprocessingMilliseconds`: shared volume normalization and 2D/2.5D context window preparation.
 - `inferenceMilliseconds`: summed wall time inside ONNX `session.run` calls only; excludes queue wait.
-- `postprocessingMilliseconds`: sigmoid/threshold, inverse resize, NIfTI encoding, SHA-256 and prediction payload/base-provenance persistence. Final idempotency receipt writes are excluded.
+- `postprocessingMilliseconds`: probability mean/sigmoid, threshold, inverse resize, auxiliary NIfTI encoding, SHA-256 and prediction payload/base-provenance persistence. Final idempotency receipt writes are excluded.
 - The service stores prediction NIfTI files and provenance sidecars under a configured local object-storage root. Returned keys are deterministic UUIDs derived from an opaque requestId; evaluation only accepts that restricted key format. User MRI uploads are not persisted.
 - Correlation IDs are validated or regenerated and are returned in response headers/bodies and stored with prediction provenance. Logs exclude request bodies, MRI data, and tokens.
 - The API does not store user or authorization data. Base Compose does not publish port 8000 and attaches the service only to its internal backend network. The optional `compose.dev.yaml` publishes it on `127.0.0.1` for host-based development only. Do not expose this service directly to an untrusted network.

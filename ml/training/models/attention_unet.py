@@ -28,8 +28,14 @@ class AttentionGate(nn.Module):
 
 
 class AttentionUNet(UNet):
-    def __init__(self, channels: Sequence[int] = (32, 64, 128, 256, 512)) -> None:
-        super().__init__(channels)
+    def __init__(
+        self,
+        channels: Sequence[int] = (32, 64, 128, 256, 512),
+        input_channels: int = 1,
+        boundary_head: bool = False,
+        deep_supervision: bool = False,
+    ) -> None:
+        super().__init__(channels, input_channels, boundary_head, deep_supervision)
         self.attention_gates = nn.ModuleList(
             [AttentionGate(width) for width in reversed(channels[:-1])]
         )

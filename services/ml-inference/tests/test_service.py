@@ -1,5 +1,6 @@
 import gzip
 import hashlib
+import io
 import json
 import logging
 import threading
@@ -15,7 +16,7 @@ from brainseg_inference.app import create_app
 from brainseg_inference.errors import ServiceError
 from brainseg_inference.logging import JsonFormatter, correlation_id
 from brainseg_inference.manifest import ModelManifest
-from brainseg_inference.runtime import OnnxPredictor, Predictor
+from brainseg_inference.runtime import OnnxPredictor, Predictor, PredictorOutput
 from brainseg_inference.settings import Settings
 from brainseg_inference.storage import LocalObjectStorage
 from fastapi.testclient import TestClient
@@ -58,6 +59,56 @@ class EmptyPredictor:
 
     def predict_batch(self, images: NDArray[np.float32]) -> tuple[NDArray[np.float32], float]:
         return np.full_like(images, -100), 0.0
+
+
+class RichPredictor:
+    batch_size = 8
+    observed_shape: tuple[int, ...] | None = None
+
+    def predict_batch(self, images: NDArray[np.float32]) -> tuple[NDArray[np.float32], float]:
+        del images
+        raise AssertionError("The rich prediction interface should be used.")
+
+    def predict_outputs_batch(self, images: NDArray[np.float32]) -> PredictorOutput:
+        self.observed_shape = images.shape
+        shape = (len(images), images.shape[-2], images.shape[-1])
+        return PredictorOutput(
+            np.full(shape, 0.75, dtype=np.float32),
+            np.full(shape, 0.25, dtype=np.float32),
+            np.full(shape, 0.5, dtype=np.float32),
+            np.full(shape, 0.0625, dtype=np.float32),
+            1.0,
+        )
+
+
+def two_point_five_d_manifest() -> ModelManifest:
+    first_hash, second_hash = "1" * 64, "2" * 64
+    return ModelManifest.model_validate(
+        {
+            "manifestVersion": 1,
+            "modelVersion": "synthetic-2p5d-fixture",
+            "architecture": "AttentionUNet",
+            "preprocessingVersion": "flair-v1",
+            "inputSize": 256,
+            "threshold": 0.5,
+            "weightFile": "seed-17.onnx",
+            "weightSha256": first_hash,
+            "artifactKind": "synthetic_test",
+            "inputMode": "2p5d",
+            "contextSlices": 3,
+            "sliceFusion": "center_attention",
+            "boundaryHead": True,
+            "deepSupervision": True,
+            "memberWeights": [
+                {"weightFile": "seed-17.onnx", "weightSha256": first_hash},
+                {"weightFile": "seed-42.onnx", "weightSha256": second_hash},
+            ],
+            "memberWeightHashes": [first_hash, second_hash],
+            "uncertaintyEnabled": True,
+            "uncertaintyMethod": "predictive_entropy-v1",
+            "uncertaintyScaleMax": 1.0,
+        }
+    )
 
 
 def volume_bytes(
@@ -134,6 +185,9 @@ def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path:
         assert result["timings"]["inferenceMilliseconds"] >= 0
         assert result["inputSize"] == 256
         assert result["weightSha256"] is None
+        assert result["probabilityArtifact"] is None
+        assert result["uncertaintyArtifact"] is None
+        assert result["modelVarianceArtifact"] is None
 
         with gzip.open(tmp_path / result["predictionObjectKey"], "rb") as stream:
             mask_image = nib.Nifti1Image.from_bytes(stream.read())
@@ -141,6 +195,75 @@ def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path:
         assert np.allclose(mask_image.affine, np.diag([0.7, 0.8, 2.0, 1]))
         assert nib.aff2axcodes(mask_image.affine) == ("R", "A", "S")
         assert np.isin(mask_image.get_fdata(), [0, 1]).all()
+
+
+def test_2p5d_ensemble_artifacts_round_trip_space_and_evaluate_calibration(tmp_path: Path):
+    settings = service_settings(object_storage_path=tmp_path)
+    predictor = RichPredictor()
+    with authenticated_client(settings, predictor) as client:
+        runtime = client.app.state.model_runtime
+        runtime.manifest = two_point_five_d_manifest()
+        runtime.manifest_sha256 = "a" * 64
+        source = volume_bytes()
+        segmentation_response = client.post(
+            "/v1/segment",
+            data={"requestId": "2p5d-ensemble"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        assert segmentation_response.status_code == 200, segmentation_response.text
+        result = segmentation_response.json()
+        assert predictor.observed_shape == (3, 3, 256, 256)
+        assert result["inputMode"] == "2p5d"
+        assert result["contextSlices"] == 3
+        assert result["ensembleSize"] == 2
+        assert result["memberWeightHashes"] == ["1" * 64, "2" * 64]
+        assert result["probabilityArtifact"]
+        assert result["boundaryArtifact"]
+        assert result["uncertaintyArtifact"]
+        assert result["modelVarianceArtifact"]
+        assert result["meanUncertainty"] == 50
+        assert result["p95Uncertainty"] == 50
+
+        for key, expected_dtype in (
+            (result["probabilityArtifact"], np.float32),
+            (result["boundaryArtifact"], np.uint8),
+            (result["uncertaintyArtifact"], np.uint8),
+            (result["modelVarianceArtifact"], np.float32),
+        ):
+            downloaded = client.get(f"/v1/artifacts/{key}")
+            assert downloaded.status_code == 200
+            assert (
+                hashlib.sha256(downloaded.content).hexdigest()
+                == downloaded.headers["X-Artifact-Sha256"]
+            )
+            with gzip.GzipFile(fileobj=io.BytesIO(downloaded.content)) as stream:
+                image = nib.Nifti1Image.from_bytes(stream.read())
+            assert image.shape == (8, 10, 3)
+            assert image.get_data_dtype() == np.dtype(expected_dtype)
+            assert np.allclose(image.affine, np.diag([0.7, 0.8, 2.0, 1]))
+            assert nib.aff2axcodes(image.affine) == ("R", "A", "S")
+            if key == result["uncertaintyArtifact"]:
+                uncertainty = np.asanyarray(image.dataobj)
+                assert uncertainty.min() == uncertainty.max() == 50
+                assert uncertainty.min() >= 0 and uncertainty.max() <= 100
+
+        evaluated = client.post(
+            "/v1/evaluate",
+            data={"predictionObjectKey": result["predictionObjectKey"]},
+            files={
+                "file": ("source.nii", source, "application/octet-stream"),
+                "label": (
+                    "labels.nii",
+                    volume_bytes(np.full((8, 10, 3), 4, dtype=np.float32)),
+                    "application/octet-stream",
+                ),
+            },
+        )
+        assert evaluated.status_code == 200, evaluated.text
+        metrics = evaluated.json()
+        assert metrics["patientMetrics"]["dice"] == 1
+        assert metrics["calibrationMetrics"]["brier_score"] == pytest.approx(0.0625)
+        assert metrics["uncertaintyRetentionMetrics"][2]["retained_voxel_dice"] == 1
 
 
 def test_gzip_nifti_is_accepted_for_full_volume_inference(tmp_path: Path):

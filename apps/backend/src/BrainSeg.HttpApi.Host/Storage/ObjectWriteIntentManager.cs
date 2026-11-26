@@ -82,7 +82,11 @@ public sealed class ObjectWriteIntentWorker(IServiceScopeFactory scopeFactory, I
                 || await database.SegmentationResults.AnyAsync(
                     value => value.MaskObjectKey == intent.ObjectKey
                         || value.OverlayObjectKey == intent.ObjectKey
-                        || value.ContourObjectKey == intent.ObjectKey, cancellationToken);
+                        || value.ContourObjectKey == intent.ObjectKey
+                        || value.ProbabilityObjectKey == intent.ObjectKey
+                        || value.BoundaryObjectKey == intent.ObjectKey
+                        || value.UncertaintyObjectKey == intent.ObjectKey
+                        || value.ModelVarianceObjectKey == intent.ObjectKey, cancellationToken);
             if (isReferenced)
             {
                 database.ObjectWriteIntents.Remove(intent);

@@ -7,10 +7,12 @@ export class SliceRendererService {
     canvas: HTMLCanvasElement,
     source: AxialVolume,
     slice: number,
-    mode: 'source' | 'mask' | 'overlay' | 'contour',
+    mode: 'source' | 'mask' | 'overlay' | 'contour' | 'boundary' | 'uncertainty',
     mask: AxialVolume | undefined,
     opacity: number,
+    boundary?: AxialVolume,
+    uncertainty?: AxialVolume,
   ): void {
-    renderSlice(canvas, source, slice, mode, mask, opacity);
+    renderSlice(canvas, source, slice, mode, mask, opacity, boundary, uncertainty);
   }
 }

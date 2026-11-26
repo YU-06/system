@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { readNiftiVolume, sameGrid, voxelAt } from './nifti-volume';
+import { describe, expect, it, vi } from 'vitest';
+import { readNiftiVolume, renderSlice, sameGrid, voxelAt, type AxialVolume } from './nifti-volume';
 
 function createVolume(width = 2, height = 2, depth = 2): ArrayBuffer {
   const buffer = new ArrayBuffer(352 + width * height * depth * 4);
@@ -49,5 +49,37 @@ describe('NIfTI axial volume reader', () => {
     const first = await readNiftiVolume(new Blob([createVolume()]));
     const second = await readNiftiVolume(new Blob([createVolume(3, 2, 2)]));
     expect(sameGrid(first, second)).toBe(false);
+  });
+
+  it('renders boundary and uncertainty overlays on the source voxel grid', () => {
+    const source: AxialVolume = {
+      width: 2,
+      height: 2,
+      depth: 1,
+      voxels: new Float32Array([1, 1, 1, 1]),
+      spacing: [1, 1, 1],
+      affine: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+    };
+    const boundary: AxialVolume = {
+      ...source,
+      voxels: new Float32Array([1, 0, 0, 0]),
+    };
+    const uncertainty: AxialVolume = {
+      ...source,
+      voxels: new Float32Array([100, 100, 100, 100]),
+    };
+    const image = { data: new Uint8ClampedArray(16) };
+    const context = {
+      createImageData: vi.fn(() => image),
+      putImageData: vi.fn(),
+    };
+    const canvas = document.createElement('canvas');
+    Object.defineProperty(canvas, 'getContext', { value: () => context });
+
+    renderSlice(canvas, source, 0, 'boundary', boundary, 1, boundary, uncertainty);
+    expect([...image.data.slice(0, 3)]).toEqual([255, 176, 0]);
+    renderSlice(canvas, source, 0, 'uncertainty', boundary, 1, boundary, uncertainty);
+    expect([...image.data.slice(0, 3)]).toEqual([255, 0, 0]);
+    expect(context.putImageData).toHaveBeenCalledTimes(2);
   });
 });

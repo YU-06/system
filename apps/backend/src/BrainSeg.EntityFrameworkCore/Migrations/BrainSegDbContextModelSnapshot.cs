@@ -513,12 +513,34 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<bool>("BoundaryHead")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
+                    b.Property<string>("BoundaryObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("BoundarySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("CalibrationMetricsJson")
+                        .HasMaxLength(16384)
+                        .HasColumnType("character varying(16384)");
+
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
                         .IsRequired()
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)")
                         .HasColumnName("ConcurrencyStamp");
+
+                    b.Property<int>("ContextSlices")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
 
                     b.Property<string>("ContourObjectKey")
                         .HasMaxLength(512)
@@ -535,6 +557,11 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("CreatorId");
 
+                    b.Property<bool>("DeepSupervision")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(false);
+
                     b.Property<Guid?>("DeleterId")
                         .HasColumnType("uuid")
                         .HasColumnName("DeleterId");
@@ -545,6 +572,11 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
 
                     b.Property<double?>("Dice")
                         .HasColumnType("double precision");
+
+                    b.Property<int>("EnsembleSize")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
 
                     b.Property<string>("EvaluationProtocol")
                         .HasMaxLength(64)
@@ -561,6 +593,13 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
 
                     b.Property<double>("InferenceMilliseconds")
                         .HasColumnType("double precision");
+
+                    b.Property<string>("InputMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasDefaultValue("2d");
 
                     b.Property<double?>("IoU")
                         .HasColumnType("double precision");
@@ -591,9 +630,27 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<double?>("MeanUncertainty")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("MemberWeightHashesJson")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("ModelVarianceObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("ModelVarianceSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("OverlayObjectKey")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
+
+                    b.Property<double?>("P95Uncertainty")
+                        .HasColumnType("double precision");
 
                     b.Property<double>("PostprocessingMilliseconds")
                         .HasColumnType("double precision");
@@ -603,6 +660,14 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
 
                     b.Property<double>("PreprocessingMilliseconds")
                         .HasColumnType("double precision");
+
+                    b.Property<string>("ProbabilityObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("ProbabilitySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<double?>("Recall")
                         .HasColumnType("double precision");
@@ -615,11 +680,34 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<string>("SliceFusion")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasDefaultValue("stack");
+
                     b.Property<int>("TumorAreaPixels")
                         .HasColumnType("integer");
 
                     b.Property<double>("TumorAreaRatio")
                         .HasColumnType("double precision");
+
+                    b.Property<string>("UncertaintyMethod")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("UncertaintyObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("UncertaintyRetentionMetricsJson")
+                        .HasMaxLength(16384)
+                        .HasColumnType("character varying(16384)");
+
+                    b.Property<string>("UncertaintySha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.HasKey("Id");
 
@@ -635,7 +723,11 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
 
                             t.HasCheckConstraint("CK_SegmentationResults_Metrics", "(\"Dice\" IS NULL OR \"Dice\" BETWEEN 0 AND 1) AND (\"IoU\" IS NULL OR \"IoU\" BETWEEN 0 AND 1) AND (\"Precision\" IS NULL OR \"Precision\" BETWEEN 0 AND 1) AND (\"Recall\" IS NULL OR \"Recall\" BETWEEN 0 AND 1)");
 
+                            t.HasCheckConstraint("CK_SegmentationResults_ModelShape", "\"InputMode\" IN ('2d', '2p5d') AND \"ContextSlices\" BETWEEN 1 AND 9 AND \"ContextSlices\" % 2 = 1 AND \"SliceFusion\" IN ('stack', 'center_attention') AND \"EnsembleSize\" >= 1");
+
                             t.HasCheckConstraint("CK_SegmentationResults_Timings", "\"InferenceMilliseconds\" >= 0 AND \"PreprocessingMilliseconds\" >= 0 AND \"PostprocessingMilliseconds\" >= 0");
+
+                            t.HasCheckConstraint("CK_SegmentationResults_Uncertainty", "(\"MeanUncertainty\" IS NULL OR \"MeanUncertainty\" BETWEEN 0 AND 100) AND (\"P95Uncertainty\" IS NULL OR \"P95Uncertainty\" BETWEEN 0 AND 100)");
                         });
                 });
 

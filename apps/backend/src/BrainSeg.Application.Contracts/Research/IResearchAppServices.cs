@@ -39,6 +39,8 @@ public interface ISegmentationResultAppService : IApplicationService
     Task<SegmentationResultDto> GetAsync(Guid id, CancellationToken cancellationToken = default);
     Task<PagedResultDto<SegmentationResultDto>> GetListAsync(SegmentationResultListInput input, CancellationToken cancellationToken = default);
     Task<IRemoteStreamContent> DownloadMaskAsync(Guid id, CancellationToken cancellationToken = default);
+    Task<IRemoteStreamContent> DownloadArtifactAsync(Guid id, string artifactType,
+        CancellationToken cancellationToken = default);
     Task<SegmentationResultDto> EvaluateAsync(Guid id, ResearchCommandInput input, CancellationToken cancellationToken = default);
 }
 

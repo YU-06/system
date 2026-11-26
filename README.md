@@ -6,7 +6,7 @@
 
 当前已实现 BrainStudy、SegmentationJob、ModelVersion、SegmentationResult、ExperimentRun 的领域/应用/持久化功能，并将完整 NIfTI 上传、幂等 Job 创建、数据库轮询后台推理、模型/权重快照、结果哈希登记、授权下载及独立 GT 评价串联起来。后台处理通过数据库 Pending 队列、ClaimToken/租约认领及对象写入补偿支持进程恢复；完整 Worker + FastAPI + PostgreSQL/MinIO 故障恢复联调仍需按[阶段六测试报告](docs/test-reports/0006-abp-inference-background-jobs.md)完成。没有真实训练权重、完整训练实验或正式测试结果，所有真实研究指标仍为 `NotRun`。
 
-阶段七已实现 Angular 科研工作台：病例/任务/结果/模型/实验页面使用 ABP 生成代理、权限受控路由、中文本地化与科研用途免责声明；逐层查看器仅在空间网格匹配时叠加掩膜，没有 GT 时不显示准确性指标。原始影像只保存在浏览器内存（上限 192 MiB），刷新或逐出后需重新上传。具体边界与验证见[阶段七 ADR](docs/adr/0006-angular-research-ui.md)和[阶段七测试报告](docs/test-reports/0007-angular-ui.md)。阶段七 E2E 使用合成影像与 HTTP fixtures，不是实际模型推理或真实服务联调。
+阶段七已实现 Angular 科研工作台：病例/任务/结果/模型/实验页面使用 ABP 代理、权限受控路由、中文本地化与科研用途免责声明；逐层查看器校验空间网格后可切换掩膜、预测边界和 0—100 不确定性图层，没有 GT 时不显示准确性指标。原始影像只保存在浏览器内存（上限 192 MiB），刷新或逐出后需重新上传。具体边界与验证见[阶段七 ADR](docs/adr/0006-angular-research-ui.md)和[阶段七测试报告](docs/test-reports/0007-angular-ui.md)。阶段七 E2E 使用合成影像与 HTTP fixtures，不是实际模型推理或真实服务联调。
 
 初始化时仓库仅包含 Git 元数据与 Copilot 约定，未找到独立审计报告。本次以现有约定和实际构建/测试结果为依据，不声称存在未提供的审计结论。
 
@@ -20,7 +20,7 @@
 | 对象映射 | ABP AutoMapper 模块，AutoMapper 15.1.4 安全修补版；配置工厂已适配 |
 | 前端 | Node 22.23.4、Angular 22.2.4、CLI/build 22.2.6，`apps/web`，Standalone |
 | 推理 | Python 3.12.10、FastAPI 0.162.0、ONNX Runtime 1.31.1，`services/ml-inference` |
-| 训练骨架 | `ml/training` 与 `ml/configs/baseline.yaml`，可选 PyTorch 2.15.0 |
+| 训练骨架 | `ml/training`、`ml/configs/baseline.yaml` 与预注册 A0—A3 消融矩阵，可选 PyTorch 2.15.0 |
 | 数据库 | PostgreSQL 17，EF Core PostgreSQL，已生成基础设施及五个领域表的迁移与快照 |
 | 文件 | 开发默认 `IObjectStorage` 本地实现；Compose 使用 MinIO/S3 适配器 |
 | 对象存储镜像 | 官方 MinIO 2025-10-15 源码固定提交构建，保留 AGPL 许可证 |
@@ -107,7 +107,7 @@ npm start
 
 ## 推理与训练协议
 
-推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。数据接口要求 Compose 生成的 Bearer 服务密钥；未配置密钥时推理、评价与预测下载 fail-closed。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。推理 OpenAPI 为 FastAPI `/openapi.json`，在 Compose 内部读取方式见 [API 索引](docs/api/README.md)；服务不默认发布至宿主机。
+推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`GET /v1/predictions/{key}`、`GET /v1/artifacts/{key}` 和 `POST /v1/evaluate`。数据接口要求 Compose 生成的 Bearer 服务密钥；未配置密钥时推理、评价与产物下载 fail-closed。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。推理 OpenAPI 为 FastAPI `/openapi.json`，在 Compose 内部读取方式见 [API 索引](docs/api/README.md)；服务不默认发布至宿主机。
 
 推理服务仅在部署提供经验证的研究 ONNX 权重和版本化 YAML 清单后才会就绪。把两者放在被忽略的 `artifacts/models`，令 `weightFile` 使用同目录文件名，并在清单中登记实际 SHA-256、模型版本、架构、`flair-v1`、256 输入尺寸、验证集冻结阈值及 `artifactKind: research`。在 `.env` 中设置 `ML_MODEL_MANIFEST_PATH=/models/model-manifest.yaml`，然后重建推理容器。仓库中的 [`model-manifest.example.yaml`](services/ml-inference/model-manifest.example.yaml) 明确标为合成测试产物，不能用于启用研究模型：
 
@@ -115,9 +115,9 @@ npm start
 docker compose up -d --force-recreate ml-inference
 ```
 
-启动时核对清单与权重 SHA-256，并验证 ONNX 模型元数据里的架构、预处理版本、输入尺寸和阈值。模型输入是 float32 `[N,1,256,256]`，输出为同尺寸 logits，不是已 sigmoid 的概率。未配置模型或加载失败时进程仍可通过 `/health` 诊断，但 `/ready` 返回 503；不静默使用随机模型。阈值必须来自验证集，不能用测试集调参。仅 `artifactKind: research` 可就绪，合成测试权重不会登记成研究权重。
+启动时核对清单、所有成员权重 SHA-256，并验证 ONNX 模型元数据里的架构、预处理版本、输入尺寸、阈值、输入模式与声明输出。旧二维输入仍为 float32 `[N,1,256,256]`；2.5D 输入为 clamped 轴位窗口 `[N,S,256,256]`，仅用中心层标签/预测。仅 `artifactKind: research` 可就绪，合成测试权重不会登记成研究权重。A0=2D U-Net，A1=2D Attention U-Net，A2=A1 加中心条件跨切片注意力，A3=A2 加边界头与深监督；训练控制变量和患者级配对协议见 [A0—A3 矩阵](ml/configs/ablation_matrix.yaml)。
 
-`POST /v1/segment` 的 multipart 字段为完整 T2-FLAIR NIfTI `file` 和稳定 `requestId`，返回逆变换到原空间的三维预测对象键、SHA-256、模型/预处理/权重版本、阈值、计时和关联 ID，不含准确性指标。相同请求标识可安全重放并返回相同预测对象。`POST /v1/evaluate` 接收原始 `file`、BraTS `label` 与系统生成的 `predictionObjectKey`，先严格核对形状、方向、spacing、affine、qform/sform 和单位，不匹配时拒绝计算、不静默插值；结果包含患者级与切片宏平均指标。响应和对象 sidecar 会标明 `artifactKind`，合成替身结果不属于真实研究结果。接口契约与稳定错误码见 [推理 API 文档](docs/api/ml-inference.md)，模型清单和就绪策略见 [阶段五 ADR](docs/adr/0004-fastapi-inference-service.md)，实际验收结果见 [阶段五测试报告](docs/test-reports/0005-fastapi-inference-service.md)。ABP 上传—任务—结果时序、任务状态、权限、错误码、重试、逻辑取消与对象补偿策略见 [科研领域与 API 文档](docs/api/research-domain.md)。阶段四实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。禁止把合成 smoke 作为论文结果。
+`POST /v1/segment` 的 multipart 字段为完整 T2-FLAIR NIfTI `file` 和稳定 `requestId`，返回原空间三维预测对象、哈希、模型/预处理/权重版本、阈值、计时、集成成员及可选概率、边界、不确定性、方差产物；不含准确性指标。相同请求标识可安全重放并返回相同产物。`POST /v1/evaluate` 接收原始 `file`、BraTS `label` 与系统生成的 `predictionObjectKey`，先严格核对形状、方向、spacing、affine、qform/sform 和单位，不匹配时拒绝计算、不静默插值；除患者级与切片宏平均指标外，仅在真实 GT 与相应预测产物可追溯时计算校准/保留体素指标。没有 GT 时不生成准确性或校准值。响应和对象 sidecar 会标明 `artifactKind`，合成替身结果不属于真实研究结果。接口契约与稳定错误码见 [推理 API 文档](docs/api/ml-inference.md)，模型清单和就绪策略见 [阶段五 ADR](docs/adr/0004-fastapi-inference-service.md)，本次变更的实际验收状态见 [2.5D/不确定性测试记录](docs/test-reports/0010-2p5d-boundary-uncertainty.md)。ABP 上传—任务—结果时序、任务状态、权限、错误码、重试、逻辑取消与对象补偿策略见 [科研领域与 API 文档](docs/api/research-domain.md)。阶段四实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。禁止把合成 smoke 作为论文结果。
 
 ```powershell
 uv run --frozen python -m training validate-config

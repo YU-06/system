@@ -1,6 +1,6 @@
 import { DestroyRef, Injectable, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { EMPTY, catchError, finalize, from, map, switchMap } from 'rxjs';
+import { EMPTY, catchError, finalize, forkJoin, from, map, of, switchMap } from 'rxjs';
 import {
   BrainStudyService,
   SegmentationJobService,
@@ -22,10 +22,12 @@ export type ResultState =
       study: BrainStudyDto;
       source: AxialVolume;
       mask: AxialVolume;
+      boundary?: AxialVolume;
+      uncertainty?: AxialVolume;
     }
   | {
       kind: 'error';
-      reason: 'request' | 'sourceMissing' | 'invalidMask';
+      reason: 'request' | 'sourceMissing' | 'invalidMask' | 'invalidAuxiliary';
       correlationId: string | null;
     };
 
@@ -64,7 +66,34 @@ export class ResultStore {
                 .pipe(
                   switchMap((blob) =>
                     from(readNiftiVolume(blob)).pipe(
-                      map((mask) => ({ result, job, study, source: cached.volume, mask })),
+                      switchMap((mask) =>
+                        forkJoin({
+                          boundary: result.boundaryObjectKey
+                            ? this.resultsApi
+                                .downloadArtifact(resultId, 'boundary', undefined, {
+                                  skipHandleError: true,
+                                })
+                                .pipe(switchMap((artifact) => from(readNiftiVolume(artifact))))
+                            : of(undefined),
+                          uncertainty: result.uncertaintyObjectKey
+                            ? this.resultsApi
+                                .downloadArtifact(resultId, 'uncertainty', undefined, {
+                                  skipHandleError: true,
+                                })
+                                .pipe(switchMap((artifact) => from(readNiftiVolume(artifact))))
+                            : of(undefined),
+                        }).pipe(
+                          map(({ boundary, uncertainty }) => ({
+                            result,
+                            job,
+                            study,
+                            source: cached.volume,
+                            mask,
+                            boundary,
+                            uncertainty,
+                          })),
+                        ),
+                      ),
                     ),
                   ),
                 );
@@ -75,6 +104,14 @@ export class ResultStore {
           if (!sameGrid(value.source, value.mask) || !isBinaryMask(value.mask)) {
             throw new Error('invalidMask');
           }
+          if (
+            (value.boundary &&
+              (!sameGrid(value.source, value.boundary) || !isBinaryMask(value.boundary))) ||
+            (value.uncertainty &&
+              (!sameGrid(value.source, value.uncertainty) || !isUncertaintyMap(value.uncertainty)))
+          ) {
+            throw new Error('invalidAuxiliary');
+          }
           return value;
         }),
         takeUntilDestroyed(this.destroyRef),
@@ -84,7 +121,9 @@ export class ResultStore {
               ? 'sourceMissing'
               : error instanceof Error && error.message === 'invalidMask'
                 ? 'invalidMask'
-                : 'request';
+                : error instanceof Error && error.message === 'invalidAuxiliary'
+                  ? 'invalidAuxiliary'
+                  : 'request';
           this.state.set({
             kind: 'error',
             reason,
@@ -119,6 +158,13 @@ export class ResultStore {
 function isBinaryMask(mask: AxialVolume): boolean {
   for (const value of mask.voxels) {
     if (value !== 0 && value !== 1) return false;
+  }
+  return true;
+}
+
+function isUncertaintyMap(volume: AxialVolume): boolean {
+  for (const value of volume.voxels) {
+    if (!Number.isFinite(value) || value < 0 || value > 100) return false;
   }
   return true;
 }

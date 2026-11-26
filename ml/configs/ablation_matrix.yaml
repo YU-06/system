@@ -1,0 +1,74 @@
+matrix_id: brats2020-flair-wt-2p5d-boundary-v1
+matrix_version: 1
+base_protocol_id: brats2020-flair-wt-unet-gate-v1
+conditions:
+  A0:
+    architecture: UNet
+    attention_gate: false
+    input_mode: 2d
+    context_slices: 3
+    slice_fusion: stack
+    boundary_head: false
+    deep_supervision: false
+    model_version: unet-v1
+    run_id_prefix: a0-unet
+  A1:
+    architecture: AttentionUNet
+    attention_gate: true
+    input_mode: 2d
+    context_slices: 3
+    slice_fusion: stack
+    boundary_head: false
+    deep_supervision: false
+    model_version: attention-gate-v1
+    run_id_prefix: a1-attention-unet
+  A2:
+    architecture: AttentionUNet
+    attention_gate: true
+    input_mode: 2p5d
+    context_slices: 3
+    slice_fusion: center_attention
+    boundary_head: false
+    deep_supervision: false
+    model_version: attention-context-v1
+    run_id_prefix: a2-context-attention
+  A3:
+    architecture: AttentionUNet
+    attention_gate: true
+    input_mode: 2p5d
+    context_slices: 3
+    slice_fusion: center_attention
+    boundary_head: true
+    deep_supervision: true
+    model_version: attention-context-boundary-v1
+    run_id_prefix: a3-boundary-deep-supervision
+allowed_condition_difference_paths:
+  - condition_id
+  - model.architecture
+  - model.attention_gate
+  - model.model_version
+  - input_mode
+  - slice_fusion
+  - boundary_head
+  - deep_supervision
+  - run_id
+pairwise_difference_paths:
+  A0_A1:
+    - condition_id
+    - model.architecture
+    - model.attention_gate
+    - model.model_version
+    - run_id
+  A1_A2:
+    - condition_id
+    - input_mode
+    - slice_fusion
+    - model.model_version
+    - run_id
+  A2_A3:
+    - condition_id
+    - boundary_head
+    - deep_supervision
+    - model.model_version
+    - run_id
+disclaimer: For research and teaching only. Not a medical device. Not for clinical diagnosis.

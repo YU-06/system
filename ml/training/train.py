@@ -10,14 +10,18 @@ from torch.utils.data import DataLoader
 from training import DISCLAIMER
 from training.datasets.brats2d import Brats2DDataset
 from training.experiment_protocol import (
+    ablation_matrix_sha256,
+    apply_ablation_condition,
+    assert_ablation_matrix_differences,
     assert_only_declared_condition_differences,
     build_condition_run_config,
     condition_for_architecture,
+    load_ablation_matrix,
     load_experiment_protocol,
     protocol_sha256,
     validate_training_config,
 )
-from training.losses import BCEDiceLoss
+from training.losses import BoundaryDeepSupervisionLoss
 from training.models import build_model
 from training.protocol import (
     TrainingConfig,
@@ -73,34 +77,72 @@ def run_training(
     seed: int,
     resume: Path | None = None,
     stop_after_epoch: int | None = None,
+    condition_id: str | None = None,
 ) -> Path:
+    if condition_id is not None:
+        config = apply_ablation_condition(config, load_ablation_matrix(), condition_id)
     protocol = load_experiment_protocol(Path(config.experiment_protocol_path))
     if config.execution_mode == "research":
         validate_training_config(protocol, config)
-    paired_configs = [
-        build_condition_run_config(protocol, config.model_dump(mode="json"), name, seed)
-        for name in protocol.conditions
-    ]
-    assert_only_declared_condition_differences(paired_configs[0], paired_configs[1], protocol)
+    if config.condition_id == "baseline":
+        paired_configs = [
+            build_condition_run_config(protocol, config.model_dump(mode="json"), name, seed)
+            for name in protocol.conditions
+        ]
+        assert_only_declared_condition_differences(paired_configs[0], paired_configs[1], protocol)
+        condition_name, condition = condition_for_architecture(protocol, architecture)
+        model_matrix_digest = None
+        run_id = f"{condition.run_id_prefix}-seed-{seed}"
+        run_directory = architecture
+        model_version = condition.model_version
+    else:
+        matrix = load_ablation_matrix()
+        if matrix.base_protocol_id != protocol.protocol_id:
+            raise ValueError("Ablation matrix references a different base training protocol.")
+        expected_config = apply_ablation_condition(config, matrix, config.condition_id)
+        if expected_config.model_dump() != config.model_dump():
+            raise ValueError("Training config does not match the selected ablation condition.")
+        assert_ablation_matrix_differences(config, matrix, seed)
+        condition = matrix.conditions[config.condition_id]
+        if architecture != condition.architecture:
+            raise ValueError("Selected architecture differs from the ablation matrix.")
+        condition_name = config.condition_id
+        model_matrix_digest = ablation_matrix_sha256()
+        run_id = f"{condition.run_id_prefix}-seed-{seed}"
+        run_directory = f"{condition_name}/{architecture}"
+        model_version = condition.model_version
     checked_cache(config)
     if architecture not in config.architectures or seed not in config.experiment_seeds:
         raise ValueError("Model and seed must belong to the shared experiment protocol.")
     if stop_after_epoch is not None and not 1 <= stop_after_epoch <= config.max_epochs:
         raise ValueError("Interruption epoch must lie within the configured training protocol.")
-    directory = Path(config.output_directory) / architecture / f"seed_{seed}"
-    condition_name, condition = condition_for_architecture(protocol, architecture)
-    run_id = f"{condition.run_id_prefix}-seed-{seed}"
+    directory = Path(config.output_directory) / run_directory / f"seed_{seed}"
     if resume is None and directory.exists() and any(directory.iterdir()):
         raise FileExistsError("An existing run must be resumed explicitly, not overwritten.")
     set_global_seed(seed)
     torch.set_num_threads(config.cpu_threads)
     transform = SynchronizedTransforms(
-        config.horizontal_flip_probability, config.vertical_flip_probability, config.rotate_90
+        config.horizontal_flip_probability,
+        config.vertical_flip_probability,
+        config.rotate_90,
+        config.intensity_augmentation,
+        config.intensity_transform_mode,
     )
     training = Brats2DDataset(
-        Path(config.cache_index), "train", transform, config.train_empty_fraction, seed
+        Path(config.cache_index),
+        "train",
+        transform,
+        config.train_empty_fraction,
+        seed,
+        config.input_mode,
+        config.context_slices,
     )
-    validation = Brats2DDataset(Path(config.cache_index), "validation")
+    validation = Brats2DDataset(
+        Path(config.cache_index),
+        "validation",
+        input_mode=config.input_mode,
+        context_slices=config.context_slices,
+    )
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(
         training,
@@ -110,8 +152,23 @@ def run_training(
         worker_init_fn=seed_worker,
         generator=generator,
     )
-    model = build_model(architecture, config.channels)
-    criterion = BCEDiceLoss(config.bce_weight, config.dice_smoothing)
+    model = build_model(
+        architecture,
+        config.channels,
+        input_mode=config.input_mode,
+        context_slices=config.context_slices,
+        slice_fusion=config.slice_fusion,
+        boundary_head=config.boundary_head,
+        deep_supervision=config.deep_supervision,
+    )
+    criterion = BoundaryDeepSupervisionLoss(
+        config.bce_weight,
+        config.dice_smoothing,
+        config.aux_loss_weight,
+        config.edge_loss_weight,
+        config.edge_positive_weight,
+        config.boundary_radius,
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
     stopping = EarlyStopping(config.early_stopping_patience, config.early_stopping_min_delta)
     completed_epoch = 0
@@ -147,7 +204,13 @@ def run_training(
         "epoch",
         "data_kind",
         "train_loss",
+        "train_region_loss",
+        "train_aux_loss",
+        "train_edge_loss",
         "validation_loss",
+        "validation_region_loss",
+        "validation_aux_loss",
+        "validation_edge_loss",
         "validation_patient_dice",
         "validation_patient_iou",
         "learning_rate",
@@ -163,16 +226,21 @@ def run_training(
             if stopping.stale_epochs >= stopping.patience:
                 break
             model.train()
-            loss_sum, count = 0.0, 0
+            loss_sum = region_loss_sum = auxiliary_loss_sum = edge_loss_sum = 0.0
+            count = 0
             for batch in loader:
                 optimizer.zero_grad(set_to_none=True)
-                logits = model(batch["image"])
-                loss = criterion(logits, batch["mask"])
-                if not torch.isfinite(loss):
+                output = model(batch["image"], return_outputs=True)
+                losses = criterion(output, batch["mask"])
+                if not torch.isfinite(losses.total):
                     raise ValueError("Training loss became non-finite.")
-                loss.backward()
+                losses.total.backward()
                 optimizer.step()
-                loss_sum += float(loss.item()) * batch["image"].shape[0]
+                batch_size = batch["image"].shape[0]
+                loss_sum += float(losses.total.item()) * batch_size
+                region_loss_sum += float(losses.region.item()) * batch_size
+                auxiliary_loss_sum += float(losses.auxiliary.item()) * batch_size
+                edge_loss_sum += float(losses.edge.item()) * batch_size
                 count += batch["image"].shape[0]
             result = evaluate_model(model, validation, config)
             improved, stop = stopping.update(result.mean_patient.dice)
@@ -182,7 +250,13 @@ def run_training(
                 "epoch": epoch,
                 "data_kind": training.cache.data_kind,
                 "train_loss": loss_sum / count,
+                "train_region_loss": region_loss_sum / count,
+                "train_aux_loss": auxiliary_loss_sum / count,
+                "train_edge_loss": edge_loss_sum / count,
                 "validation_loss": result.loss,
+                "validation_region_loss": result.region_loss,
+                "validation_aux_loss": result.auxiliary_loss,
+                "validation_edge_loss": result.edge_loss,
                 "validation_patient_dice": result.mean_patient.dice,
                 "validation_patient_iou": result.mean_patient.iou,
                 "learning_rate": optimizer.param_groups[0]["lr"],
@@ -192,13 +266,20 @@ def run_training(
                 "schema_version": 1,
                 "architecture": architecture,
                 "condition_name": condition_name,
-                "model_version": condition.model_version,
+                "condition_id": config.condition_id,
+                "model_version": model_version,
+                "ablation_matrix_sha256": model_matrix_digest,
                 "run_id": run_id,
                 "git_commit": git_commit,
                 "seed": seed,
                 "epoch": epoch,
                 "config_hash": config_hash(config),
                 "protocol_sha256": protocol_sha256(Path(config.experiment_protocol_path)),
+                "input_mode": config.input_mode,
+                "context_slices": config.context_slices,
+                "slice_fusion": config.slice_fusion,
+                "boundary_head": config.boundary_head,
+                "deep_supervision": config.deep_supervision,
                 "split_sha256": sha256_file(Path(config.split_manifest)),
                 "cache_sha256": sha256_file(Path(config.cache_index)),
                 "data_kind": training.cache.data_kind,
@@ -223,7 +304,9 @@ def run_training(
     status = {
         "architecture": architecture,
         "condition_name": condition_name,
-        "model_version": condition.model_version,
+        "condition_id": config.condition_id,
+        "model_version": model_version,
+        "ablation_matrix_sha256": model_matrix_digest,
         "run_id": run_id,
         "seed": seed,
         "completed_epoch": completed_epoch,
@@ -251,19 +334,33 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=DISCLAIMER)
     parser.add_argument("--config", type=Path, default=Path("ml/configs/baseline.yaml"))
     parser.add_argument("--architecture", choices=["UNet", "AttentionUNet"])
+    parser.add_argument("--condition", choices=["A0", "A1", "A2", "A3"])
     parser.add_argument("--seed", type=int)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--stop-after-epochs", type=int)
     arguments = parser.parse_args()
     config = load_config(arguments.config)
-    if arguments.resume and (arguments.architecture is None or arguments.seed is None):
-        parser.error("Resuming requires an explicit architecture and seed.")
-    for architecture in (
-        [arguments.architecture] if arguments.architecture else config.architectures
+    if arguments.condition:
+        matrix = load_ablation_matrix()
+        config = apply_ablation_condition(config, matrix, arguments.condition)
+        selected_architecture = matrix.conditions[arguments.condition].architecture
+        if arguments.architecture and arguments.architecture != selected_architecture:
+            parser.error("--architecture conflicts with the selected ablation condition.")
+    else:
+        selected_architecture = arguments.architecture
+    if arguments.resume and (
+        (arguments.architecture is None and not arguments.condition) or arguments.seed is None
     ):
+        parser.error("Resuming requires an explicit architecture and seed.")
+    for architecture in [selected_architecture] if selected_architecture else config.architectures:
         for seed in [arguments.seed] if arguments.seed is not None else config.experiment_seeds:
             directory = run_training(
-                config, architecture, seed, arguments.resume, arguments.stop_after_epochs
+                config,
+                architecture,
+                seed,
+                arguments.resume,
+                arguments.stop_after_epochs,
+                arguments.condition,
             )
             print(
                 f"Training artifacts: {directory}; mode={config.execution_mode}; "

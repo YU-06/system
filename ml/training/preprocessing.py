@@ -42,4 +42,29 @@ def prepare_axial_slice(
 ) -> NDArray[np.float32]:
     if slice_index < 0 or slice_index >= volume.shape[2]:
         raise ValueError("Slice index is outside the volume.")
-    return resize_image(normalize_volume(volume)[:, :, slice_index], size)
+    return prepare_axial_context(normalize_volume(volume), slice_index, size, 1)[0]
+
+
+def context_slice_indices(slice_index: int, depth: int, context_slices: int = 3) -> tuple[int, ...]:
+    if depth < 1 or not 0 <= slice_index < depth:
+        raise ValueError("Slice index and volume depth must identify a real axial slice.")
+    if context_slices < 1 or context_slices % 2 != 1:
+        raise ValueError("Context slices must be an odd positive number.")
+    radius = context_slices // 2
+    return tuple(
+        min(max(slice_index + offset, 0), depth - 1) for offset in range(-radius, radius + 1)
+    )
+
+
+def prepare_axial_context(
+    normalized_volume: NDArray[np.float32],
+    slice_index: int,
+    size: int = 256,
+    context_slices: int = 3,
+) -> NDArray[np.float32]:
+    if normalized_volume.ndim != 3 or not np.isfinite(normalized_volume).all():
+        raise ValueError("A finite normalized three-dimensional volume is required.")
+    indices = context_slice_indices(slice_index, normalized_volume.shape[2], context_slices)
+    return np.stack(
+        [resize_image(normalized_volume[:, :, index], size) for index in indices]
+    ).astype(np.float32, copy=False)

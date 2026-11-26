@@ -111,6 +111,27 @@ def test_dataset_sampling_does_not_delete_validation_or_test_slices(tmp_path: Pa
         Brats2DDataset(index, "validation", transform=SynchronizedTransforms())
 
 
+def test_25d_dataset_clamps_context_and_keeps_only_the_center_mask(tmp_path: Path):
+    from training.datasets.brats2d import Brats2DDataset
+
+    index = prepare_cache(tmp_path)
+    two_dimensional = Brats2DDataset(index, "train")
+    contextual = Brats2DDataset(index, "train", input_mode="2p5d", context_slices=3)
+    record = contextual.records[0]
+    sample = contextual[0]
+    center = two_dimensional[0]
+    assert sample["image"].shape == (3, 256, 256)
+    assert sample["mask"].shape == (1, 256, 256)
+    assert np.array_equal(sample["image"][1].numpy(), center["image"][0].numpy())
+    assert np.array_equal(sample["image"][0].numpy(), sample["image"][1].numpy())
+    assert sample["center_slice_index"] == record.slice_index == 0
+    assert sample["original_shape"] == (16, 16, 3)
+    assert sample["affine"].shape == (4, 4)
+    assert sample["spacing"].shape == (3,)
+    assert sample["orientation"] == ("R", "A", "S")
+    assert sample["preprocessing_version"] == "flair-v1"
+
+
 def test_patient_reconstruction_restores_non_square_geometry_and_empty_metrics(tmp_path: Path):
     from training.reconstruct_volume import patient_metrics, reconstruct_volume, save_volume
 
@@ -119,6 +140,11 @@ def test_patient_reconstruction_restores_non_square_geometry_and_empty_metrics(t
     volume, metrics = patient_metrics(masks, original)
     assert volume.shape == original.shape
     assert metrics.dice == metrics.iou == 1
+    masks[1][:] = 1
+    ordered = reconstruct_volume(masks, original.shape)
+    assert np.all(ordered[:, :, 0] == 0)
+    assert np.all(ordered[:, :, 1] == 1)
+    assert np.all(ordered[:, :, 2] == 0)
     with pytest.raises(ValueError, match="every axial slice"):
         reconstruct_volume({0: masks[0]}, original.shape)
     affine = np.diag([1.5, 1.5, 2, 1])

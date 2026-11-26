@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 from typing import Literal
 
+import nibabel as nib
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -28,6 +29,14 @@ class CachedPatient(BaseModel):
     original_shape: tuple[int, int, int]
     volume_path: str
     volume_sha256: str
+    affine: list[list[float]] | None = None
+    spacing: tuple[float, float, float] | None = None
+    orientation: tuple[str, str, str] | None = None
+    spatial_unit: str | None = None
+    qform_code: int | None = None
+    sform_code: int | None = None
+    qform: list[list[float]] | None = None
+    sform: list[list[float]] | None = None
 
 
 class CacheManifest(BaseModel):
@@ -88,6 +97,22 @@ def preprocess_dataset(dataset_root: Path, split_path: Path, output: Path) -> Ca
             original_shape=tuple(volume.shape),
             volume_path=volume_path.relative_to(output).as_posix(),
             volume_sha256=sha256_file(volume_path),
+            affine=image.affine.tolist(),
+            spacing=tuple(float(np.linalg.norm(image.affine[:3, axis])) for axis in range(3)),
+            orientation=tuple(str(code) for code in nib.aff2axcodes(image.affine)),
+            spatial_unit=image.header.get_xyzt_units()[0] or "unknown",
+            qform_code=int(image.header["qform_code"]),
+            sform_code=int(image.header["sform_code"]),
+            qform=(
+                np.asarray(image.header.get_qform(), dtype=np.float64).tolist()
+                if int(image.header["qform_code"]) > 0
+                else None
+            ),
+            sform=(
+                np.asarray(image.header.get_sform(), dtype=np.float64).tolist()
+                if int(image.header["sform_code"]) > 0
+                else None
+            ),
         )
         for slice_index in range(volume.shape[2]):
             path = patient_directory / f"slice_{slice_index:04}.npz"

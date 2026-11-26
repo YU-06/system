@@ -45,9 +45,27 @@ public class SegmentationResultAppService(ISegmentationResultRepository results,
         CancellationToken cancellationToken = default)
     {
         var result = await results.GetAsync(id, cancellationToken: cancellationToken);
-        await artifacts.VerifyAsync(result.MaskObjectKey, result.MaskSha256, cancellationToken);
-        var stream = await storage.OpenReadAsync(result.MaskObjectKey, cancellationToken);
-        return new RemoteStreamContent(stream, "prediction.nii.gz", "application/gzip");
+        return await DownloadAsync(result.MaskObjectKey, result.MaskSha256,
+            $"prediction-{id:N}.nii.gz", cancellationToken);
+    }
+
+    [Authorize(ResearchPermissions.SegmentationResults.Download)]
+    public virtual async Task<IRemoteStreamContent> DownloadArtifactAsync(Guid id, string artifactType,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await results.GetAsync(id, cancellationToken: cancellationToken);
+        var (key, hash, fileName) = artifactType switch
+        {
+            "probability" => (result.ProbabilityObjectKey, result.ProbabilitySha256, "probability"),
+            "boundary" => (result.BoundaryObjectKey, result.BoundarySha256, "boundary"),
+            "uncertainty" => (result.UncertaintyObjectKey, result.UncertaintySha256, "uncertainty"),
+            "model-variance" => (result.ModelVarianceObjectKey, result.ModelVarianceSha256, "model-variance"),
+            _ => throw new BusinessException(ResearchErrors.ArtifactUnavailable)
+        };
+        if (key is null || hash is null)
+            throw new BusinessException(ResearchErrors.ArtifactUnavailable);
+        return await DownloadAsync(key, hash, $"result-{id:N}-{fileName}.nii.gz",
+            cancellationToken);
     }
 
     [Authorize(ResearchPermissions.SegmentationResults.Evaluate)]
@@ -105,8 +123,21 @@ public class SegmentationResultAppService(ISegmentationResultRepository results,
 
         result.RecordEvaluation(study.GroundTruthSha256, evaluation.EvaluationProtocol,
             evaluation.PatientMetrics.Dice, evaluation.PatientMetrics.Iou,
-            evaluation.PatientMetrics.Precision, evaluation.PatientMetrics.Recall);
+            evaluation.PatientMetrics.Precision, evaluation.PatientMetrics.Recall,
+            evaluation.CalibrationMetrics is { } calibration
+                ? calibration.GetRawText() : null,
+            evaluation.UncertaintyRetentionMetrics is { } retention
+                ? retention.GetRawText() : null);
         await results.UpdateAsync(result, autoSave: true, cancellationToken: cancellationToken);
         return Map<SegmentationResult, SegmentationResultDto>(result);
+    }
+
+    private async Task<IRemoteStreamContent> DownloadAsync(string objectKey, string? sha256,
+        string fileName, CancellationToken cancellationToken)
+    {
+        if (sha256 is null) throw new BusinessException(ResearchErrors.ArtifactUnavailable);
+        await artifacts.VerifyAsync(objectKey, sha256, cancellationToken);
+        var stream = await storage.OpenReadAsync(objectKey, cancellationToken);
+        return new RemoteStreamContent(stream, fileName, "application/gzip");
     }
 }

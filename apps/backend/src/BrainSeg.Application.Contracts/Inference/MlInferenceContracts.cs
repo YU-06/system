@@ -29,7 +29,25 @@ public sealed record InferenceSegmentResponse(
     string Space,
     int TumorAreaPixels,
     double TumorAreaRatio,
-    InferenceTimings Timings);
+    InferenceTimings Timings,
+    string InputMode = "2d",
+    int ContextSlices = 1,
+    string SliceFusion = "stack",
+    bool BoundaryHead = false,
+    bool DeepSupervision = false,
+    string[]? MemberWeightHashes = null,
+    string? ProbabilityArtifact = null,
+    string? ProbabilitySha256 = null,
+    string? BoundaryArtifact = null,
+    string? BoundarySha256 = null,
+    string? UncertaintyArtifact = null,
+    string? UncertaintySha256 = null,
+    string? ModelVarianceArtifact = null,
+    string? ModelVarianceSha256 = null,
+    int EnsembleSize = 1,
+    double? MeanUncertainty = null,
+    double? P95Uncertainty = null,
+    string? UncertaintyMethod = null);
 
 public sealed record InferenceMetrics(double Dice, double Iou, double Precision, double Recall);
 
@@ -50,7 +68,9 @@ public sealed record InferenceEvaluationResponse(
     string PredictionSha256,
     InferenceMetrics PatientMetrics,
     InferenceMetrics SliceMacroMetrics,
-    int SliceCount);
+    int SliceCount,
+    global::System.Text.Json.JsonElement? CalibrationMetrics = null,
+    global::System.Text.Json.JsonElement? UncertaintyRetentionMetrics = null);
 
 public sealed class InferencePredictionDownload(HttpResponseMessage response, Stream content, string sha256)
     : IAsyncDisposable
@@ -71,6 +91,9 @@ public interface IMlInferenceClient
         string requestId, string correlationId, CancellationToken cancellationToken);
 
     Task<InferencePredictionDownload> OpenPredictionAsync(string predictionObjectKey, string correlationId,
+        CancellationToken cancellationToken);
+
+    Task<InferencePredictionDownload> OpenArtifactAsync(string artifactObjectKey, string correlationId,
         CancellationToken cancellationToken);
 
     Task<InferenceEvaluationResponse> EvaluateAsync(string inputObjectKey, string groundTruthObjectKey,

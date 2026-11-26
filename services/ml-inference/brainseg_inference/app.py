@@ -253,8 +253,14 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
         try:
             try:
                 response = await call_next(request)
-            except Exception:
-                logger.error("request_failed", extra={"errorCode": "INTERNAL_ERROR"})
+            except Exception as error:
+                logger.error(
+                    "request_failed",
+                    extra={
+                        "errorCode": "INTERNAL_ERROR",
+                        "diagnosticType": type(error).__name__,
+                    },
+                )
                 response = error_response(
                     ServiceError("INTERNAL_ERROR", "The request could not be completed.", 500)
                 )

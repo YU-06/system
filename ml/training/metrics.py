@@ -25,6 +25,14 @@ def binary_metrics(predicted: NDArray[np.uint8], expected: NDArray[np.uint8]) ->
     return BinaryMetrics(
         dice=2 * intersection / total if total else 1.0,
         iou=intersection / union if union else 1.0,
-        precision=intersection / predicted_count if predicted_count else 1.0,
-        recall=intersection / expected_count if expected_count else 1.0,
+        precision=(
+            intersection / predicted_count
+            if predicted_count
+            else (1.0 if expected_count == 0 else 0.0)
+        ),
+        recall=(
+            intersection / expected_count
+            if expected_count
+            else (1.0 if predicted_count == 0 else 0.0)
+        ),
     )

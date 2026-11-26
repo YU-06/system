@@ -4,7 +4,7 @@
 
 ## 当前范围
 
-当前已实现可构建的工程骨架及 BrainStudy、SegmentationJob、ModelVersion、SegmentationResult、ExperimentRun 的领域/应用/持久化功能，包含上传、查询、任务状态机和结果记录。尚不包含实际后台调度器、真实训练权重、完整训练循环或已完成实验。BraTS 2020、单模态 T2-FLAIR、二维轴位 Whole Tumor 二分类协议固定不变；标签 1/2/4 映射为前景。所有真实研究实验仍为 `NotRun`。
+当前已实现 BrainStudy、SegmentationJob、ModelVersion、SegmentationResult、ExperimentRun 的领域/应用/持久化功能，并将完整 NIfTI 上传、幂等 Job 创建、数据库轮询后台推理、模型/权重快照、结果哈希登记、授权下载及独立 GT 评价串联起来。后台处理通过数据库 Pending 队列、ClaimToken/租约认领及对象写入补偿支持进程恢复；完整 Worker + FastAPI + PostgreSQL/MinIO 故障恢复联调仍需按[阶段六测试报告](docs/test-reports/0006-abp-inference-background-jobs.md)完成。没有真实训练权重、完整训练实验或正式测试结果，所有真实研究指标仍为 `NotRun`。
 
 初始化时仓库仅包含 Git 元数据与 Copilot 约定，未找到独立审计报告。本次以现有约定和实际构建/测试结果为依据，不声称存在未提供的审计结论。
 
@@ -48,7 +48,7 @@ docker compose config --quiet
 docker compose up --build --wait --wait-timeout 240
 ```
 
-初始化脚本从唯一的 `.env.example` 创建被 Git 忽略的 `.env`，为 PostgreSQL 和 MinIO 分别生成随机开发密码，不打印密码、不覆写已有 `.env`。已有文件时跳过初始化命令。不要提交 `.env`、真实权重、MRI、证书或私钥；不要运行会把解析后密钥输出到终端/日志的普通 `docker compose config`。
+初始化脚本从唯一的 `.env.example` 创建被 Git 忽略的 `.env`，为 PostgreSQL、MinIO 和 FastAPI 服务间认证分别生成独立随机密钥，并将共享推理密钥配置到后端与推理容器，不打印密钥、不覆写已有 `.env`。已有文件时跳过初始化命令。不要提交 `.env`、真实权重、MRI、证书或私钥；不要运行会把解析后密钥输出到终端/日志的普通 `docker compose config`。
 
 启动顺序为 PostgreSQL 就绪、一次性 `backend-migrate` 执行 EF 迁移、后端启动、前端启动；MinIO 与推理进程也有健康检查。迁移失败时后端不会继续启动。
 
@@ -105,7 +105,7 @@ npm start
 
 ## 推理与训练协议
 
-推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。
+推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。数据接口要求 Compose 生成的 Bearer 服务密钥；未配置密钥时推理、评价与预测下载 fail-closed。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。
 
 推理服务仅在部署提供经验证的研究 ONNX 权重和版本化 YAML 清单后才会就绪。把两者放在被忽略的 `artifacts/models`，令 `weightFile` 使用同目录文件名，并在清单中登记实际 SHA-256、模型版本、架构、`flair-v1`、256 输入尺寸、验证集冻结阈值及 `artifactKind: research`。在 `.env` 中设置 `ML_MODEL_MANIFEST_PATH=/models/model-manifest.yaml`，然后重建推理容器。仓库中的 [`model-manifest.example.yaml`](services/ml-inference/model-manifest.example.yaml) 明确标为合成测试产物，不能用于启用研究模型：
 
@@ -115,7 +115,7 @@ docker compose up -d --force-recreate ml-inference
 
 启动时核对清单与权重 SHA-256，并验证 ONNX 模型元数据里的架构、预处理版本、输入尺寸和阈值。模型输入是 float32 `[N,1,256,256]`，输出为同尺寸 logits，不是已 sigmoid 的概率。未配置模型或加载失败时进程仍可通过 `/health` 诊断，但 `/ready` 返回 503；不静默使用随机模型。阈值必须来自验证集，不能用测试集调参。仅 `artifactKind: research` 可就绪，合成测试权重不会登记成研究权重。
 
-`POST /v1/segment` 的 multipart 字段为完整 T2-FLAIR NIfTI `file`，返回原空间三维预测对象键、SHA-256、版本、阈值、计时和关联 ID，不含准确性指标。`POST /v1/evaluate` 接收原始 `file`、BraTS `label` 与系统生成的 `predictionObjectKey`，先严格核对形状、方向、spacing、affine、qform/sform 和单位，不匹配时拒绝计算、不静默插值；结果包含患者级与切片宏平均指标。响应和对象 sidecar 会标明 `artifactKind`，合成替身结果不属于真实研究结果。接口契约与稳定错误码见 [推理 API 文档](docs/api/ml-inference.md)，模型清单和就绪策略见 [阶段五 ADR](docs/adr/0004-fastapi-inference-service.md)，实际验收结果见 [阶段五测试报告](docs/test-reports/0005-fastapi-inference-service.md)。阶段四实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。禁止把合成 smoke 作为论文结果。
+`POST /v1/segment` 的 multipart 字段为完整 T2-FLAIR NIfTI `file` 和稳定 `requestId`，返回逆变换到原空间的三维预测对象键、SHA-256、模型/预处理/权重版本、阈值、计时和关联 ID，不含准确性指标。相同请求标识可安全重放并返回相同预测对象。`POST /v1/evaluate` 接收原始 `file`、BraTS `label` 与系统生成的 `predictionObjectKey`，先严格核对形状、方向、spacing、affine、qform/sform 和单位，不匹配时拒绝计算、不静默插值；结果包含患者级与切片宏平均指标。响应和对象 sidecar 会标明 `artifactKind`，合成替身结果不属于真实研究结果。接口契约与稳定错误码见 [推理 API 文档](docs/api/ml-inference.md)，模型清单和就绪策略见 [阶段五 ADR](docs/adr/0004-fastapi-inference-service.md)，实际验收结果见 [阶段五测试报告](docs/test-reports/0005-fastapi-inference-service.md)。ABP 上传—任务—结果时序、任务状态、权限、错误码、重试、逻辑取消与对象补偿策略见 [科研领域与 API 文档](docs/api/research-domain.md)。阶段四实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。禁止把合成 smoke 作为论文结果。
 
 ```powershell
 uv run --frozen python -m training validate-config
@@ -128,9 +128,9 @@ uv run --frozen python -m training split --patients data/patient_ids.json --outp
 
 ## 验证与 CI
 
-骨架阶段的 Angular 7 项、Python 24 项及浏览器 2 项测试结果见 [骨架报告](docs/test-reports/0001-skeleton.md)。2026-11-06 领域阶段完整后端回归为 **79 通过、4 项 PostgreSQL 环境跳过、0 失败**；严格依赖恢复、Release 构建、格式门禁、迁移快照及幂等 SQL 生成均通过，Python 24 项回归再次通过，详情见 [领域报告](docs/test-reports/0002-research-domain.md)。许可证和依赖弃用提示均如实保留。
+骨架阶段的 Angular 7 项、Python 24 项及浏览器 2 项测试结果见 [骨架报告](docs/test-reports/0001-skeleton.md)。2026-11-06 领域阶段完整后端回归为 **79 通过、4 项 PostgreSQL 环境跳过、0 失败**；严格依赖恢复、Release 构建、格式门禁、迁移快照及幂等 SQL 生成均通过，详情见 [领域报告](docs/test-reports/0002-research-domain.md)。阶段六回归为后端 **76 通过、4 项跳过**、Python **83 通过**；并行 Worker、进程重启与结果提交故障注入尚未端到端验证，详见[阶段六报告](docs/test-reports/0006-abp-inference-background-jobs.md)和[阶段六 ADR](docs/adr/0005-abp-inference-background-jobs.md)。许可证和依赖弃用提示均如实保留。
 
-**容器验收尚未完成：当前主机未安装 Docker CLI、Docker Desktop 或容器引擎，因此 Docker build、Compose 启动、真实 PostgreSQL 迁移与 MinIO 联调均未执行。应用测试通过不能替代容器全链路验收。** 需先在宿主机安装并启动 Docker Desktop 的 Linux 容器引擎，再按上文命令完成验证；本项目不会自动提权安装系统组件。
+**容器验收尚未完成：Docker build、Compose 启动、真实 PostgreSQL 迁移与 MinIO 联调均未执行。应用测试通过不能替代容器全链路验收。** 需先在宿主机安装并启动 Docker Desktop 的 Linux 容器引擎，再按上文命令完成验证；本项目不会自动提权安装系统组件。
 
 ```powershell
 dotnet restore apps/backend/BrainSeg.slnx --locked-mode

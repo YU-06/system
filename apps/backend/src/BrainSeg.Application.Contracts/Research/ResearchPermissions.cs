@@ -13,13 +13,14 @@ public static class ResearchPermissions
         public const string Create = Default + ".Create";
         public const string Update = Default + ".Update";
         public const string Delete = Default + ".Delete";
+        public const string RegisterGroundTruth = Default + ".RegisterGroundTruth";
+        public const string DeleteGroundTruth = Default + ".DeleteGroundTruth";
     }
 
     public static class SegmentationJobs
     {
         public const string Default = "BrainSeg.SegmentationJobs";
         public const string Create = Default + ".Create";
-        public const string Execute = Default + ".Execute";
         public const string Cancel = Default + ".Cancel";
         public const string Retry = Default + ".Retry";
     }
@@ -34,6 +35,8 @@ public static class ResearchPermissions
     public static class SegmentationResults
     {
         public const string Default = "BrainSeg.SegmentationResults";
+        public const string Download = Default + ".Download";
+        public const string Evaluate = Default + ".Evaluate";
     }
 
     public static class ExperimentRuns
@@ -48,10 +51,11 @@ public class ResearchPermissionDefinitionProvider : PermissionDefinitionProvider
     public override void Define(IPermissionDefinitionContext context)
     {
         var group = context.AddGroup(ResearchPermissions.GroupName, LocalizableString.Create<BrainSegResource>("Permission:Research"));
-        Add(group, ResearchPermissions.BrainStudies.Default, "BrainStudies", "Create", "Update", "Delete");
-        Add(group, ResearchPermissions.SegmentationJobs.Default, "SegmentationJobs", "Create", "Execute", "Cancel", "Retry");
+        Add(group, ResearchPermissions.BrainStudies.Default, "BrainStudies", "Create", "Update", "Delete",
+            "RegisterGroundTruth", "DeleteGroundTruth");
+        Add(group, ResearchPermissions.SegmentationJobs.Default, "SegmentationJobs", "Create", "Cancel", "Retry");
         Add(group, ResearchPermissions.ModelVersions.Default, "ModelVersions", "Create", "Manage");
-        Add(group, ResearchPermissions.SegmentationResults.Default, "SegmentationResults");
+        Add(group, ResearchPermissions.SegmentationResults.Default, "SegmentationResults", "Download", "Evaluate");
         Add(group, ResearchPermissions.ExperimentRuns.Default, "ExperimentRuns", "Create");
     }
 

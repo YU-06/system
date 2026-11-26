@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Logging;
 using Volo.Abp;
 using Volo.Abp.Application.Dtos;
+using Volo.Abp.Content;
 using Volo.Abp.Domain.Repositories;
 using Volo.Abp.Uow;
 
@@ -11,7 +12,9 @@ namespace BrainSeg.Research;
 
 [Authorize(ResearchPermissions.BrainStudies.Default)]
 public class BrainStudyAppService(IBrainStudyRepository studies, ISegmentationJobRepository jobs,
-    IObjectStorage storage, ResearchArtifactService artifacts, IUnitOfWorkManager unitOfWorkManager)
+    ISegmentationResultRepository results,
+    IObjectStorage storage, ResearchArtifactService artifacts, IObjectWriteIntentManager intents,
+    ILogger<BrainStudyAppService> logger)
     : ResearchAppService, IBrainStudyAppService
 {
     private static readonly IReadOnlyDictionary<string, Expression<Func<BrainStudy, object>>> Sorting =
@@ -41,40 +44,108 @@ public class BrainStudyAppService(IBrainStudyRepository studies, ISegmentationJo
     [Authorize(ResearchPermissions.BrainStudies.Create)]
     public virtual async Task<BrainStudyDto> UploadAsync(UploadBrainStudyInput input, CancellationToken cancellationToken = default)
     {
-        var file = await artifacts.ReadStudyAsync(input.File, input.SliceIndex, cancellationToken);
-        var candidate = new BrainStudy(GuidGenerator.Create(), input.StudyNumber, input.Pseudonym,
-            "validation.bin", file.Sha256, file.Width, file.Height, input.SliceIndex);
-        if (await studies.AnyAsync(value => value.StudyNumber == candidate.StudyNumber
-            || value.OriginalFileSha256 == candidate.OriginalFileSha256 && value.SliceIndex == candidate.SliceIndex, cancellationToken))
-        {
-            throw new BusinessException(ResearchErrors.DuplicateStudy);
-        }
-        using var content = new MemoryStream(file.OriginalBytes, writable: false);
-        var saved = await storage.SaveAsync(content, cancellationToken);
-        var study = new BrainStudy(candidate.Id, candidate.StudyNumber, candidate.Pseudonym,
-            saved.ObjectKey, saved.Sha256, file.Width, file.Height, input.SliceIndex);
-        var cleanupDone = false;
-        async Task CleanupAsync()
-        {
-            if (cleanupDone) return;
-            cleanupDone = true;
-            try { await storage.DeleteAsync(saved.ObjectKey, CancellationToken.None); }
-            catch (Exception) { Logger.LogError("StudyUploadRollbackCleanupFailed for object {ObjectKey}", saved.ObjectKey); }
-        }
-        if (unitOfWorkManager.Current is { } unitOfWork)
-        {
-            unitOfWork.Failed += async (_, _) => await CleanupAsync();
-        }
+        var objectKey = $"{GuidGenerator.Create():N}.bin";
+        await intents.RegisterAsync(objectKey, "study-upload", cancellationToken);
+        await using var content = input.File.GetStream();
+        var saved = await storage.SaveAsync(objectKey, content, cancellationToken);
         try
         {
+            var file = await artifacts.ValidateStoredStudyAsync(saved.ObjectKey, input.File.FileName,
+                input.File.ContentType, saved.Sha256, input.SliceIndex, cancellationToken);
+            if (await studies.AnyAsync(value => value.StudyNumber == input.StudyNumber.Trim().ToUpperInvariant()
+                || value.OriginalFileSha256 == file.Sha256 && value.SliceIndex == input.SliceIndex,
+                cancellationToken))
+                throw new BusinessException(ResearchErrors.DuplicateStudy);
+            var study = new BrainStudy(GuidGenerator.Create(), input.StudyNumber, input.Pseudonym,
+                saved.ObjectKey, file.Sha256, file.Width, file.Height, input.SliceIndex);
             study.MarkReady();
             await studies.InsertAsync(study, autoSave: true, cancellationToken: cancellationToken);
+            await intents.CompleteInCurrentUnitOfWorkAsync(saved.ObjectKey, cancellationToken);
             return Map<BrainStudy, BrainStudyDto>(study);
         }
         catch
         {
-            await CleanupAsync();
+            try
+            {
+                await storage.DeleteAsync(saved.ObjectKey, CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Study upload cleanup deferred for object {ObjectKey}", saved.ObjectKey);
+            }
             throw;
+        }
+    }
+
+    [Authorize(ResearchPermissions.BrainStudies.RegisterGroundTruth)]
+    [UnitOfWork(isTransactional: true)]
+    public virtual async Task<BrainStudyDto> RegisterGroundTruthAsync(Guid id, UploadGroundTruthInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var study = await studies.GetAsync(id, cancellationToken: cancellationToken);
+        study.EnsureReady();
+        var objectKey = $"{GuidGenerator.Create():N}.bin";
+        await intents.RegisterAsync(objectKey, "ground-truth-upload", cancellationToken);
+        await using var content = input.File.GetStream();
+        var saved = await storage.SaveAsync(objectKey, content, cancellationToken);
+        try
+        {
+            var file = await artifacts.ValidateStoredStudyAsync(saved.ObjectKey, input.File.FileName,
+                input.File.ContentType, saved.Sha256, study.SliceIndex, cancellationToken);
+            if (file.Width != study.Width || file.Height != study.Height)
+                throw new BusinessException(ResearchErrors.InvalidFile);
+            study.RegisterGroundTruth(saved.ObjectKey, saved.Sha256);
+            await studies.UpdateAsync(study, autoSave: true, cancellationToken: cancellationToken);
+            await intents.CompleteInCurrentUnitOfWorkAsync(saved.ObjectKey, cancellationToken);
+            return Map<BrainStudy, BrainStudyDto>(study);
+        }
+        catch
+        {
+            try
+            {
+                await storage.DeleteAsync(saved.ObjectKey, CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                logger.LogError(exception, "Ground-truth cleanup deferred for object {ObjectKey}", saved.ObjectKey);
+            }
+            throw;
+        }
+    }
+
+    [Authorize(ResearchPermissions.SegmentationResults.Download)]
+    public virtual async Task<IRemoteStreamContent> DownloadGroundTruthAsync(Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        var study = await studies.GetAsync(id, cancellationToken: cancellationToken);
+        if (study.GroundTruthObjectKey is null)
+            throw new BusinessException(ResearchErrors.GroundTruthNotRegistered);
+        await artifacts.VerifyAsync(study.GroundTruthObjectKey, study.GroundTruthSha256, cancellationToken);
+        var stream = await storage.OpenReadAsync(study.GroundTruthObjectKey, cancellationToken);
+        return new RemoteStreamContent(stream, "ground-truth.bin", "application/octet-stream");
+    }
+
+    [Authorize(ResearchPermissions.BrainStudies.DeleteGroundTruth)]
+    [UnitOfWork(isTransactional: true)]
+    public virtual async Task DeleteGroundTruthAsync(Guid id, ResearchCommandInput input,
+        CancellationToken cancellationToken = default)
+    {
+        var study = await studies.GetAsync(id, cancellationToken: cancellationToken);
+        CheckStamp(study.ConcurrencyStamp, input.ConcurrencyStamp);
+        var objectKey = study.GroundTruthObjectKey
+            ?? throw new BusinessException(ResearchErrors.GroundTruthNotRegistered);
+        await intents.RegisterAsync(objectKey, "ground-truth-delete", cancellationToken);
+        study.RemoveGroundTruth();
+        await studies.UpdateAsync(study, autoSave: true, cancellationToken: cancellationToken);
+
+        var jobIds = (await jobs.GetQueryableAsync()).Where(job => job.StudyId == id).Select(job => job.Id);
+        var relatedResults = await AsyncExecuter.ToListAsync(
+            (await results.GetQueryableAsync()).Where(result => jobIds.Contains(result.JobId)),
+            cancellationToken);
+        foreach (var result in relatedResults)
+        {
+            result.ClearEvaluation();
+            await results.UpdateAsync(result, autoSave: true, cancellationToken: cancellationToken);
         }
     }
 

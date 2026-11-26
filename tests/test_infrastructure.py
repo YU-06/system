@@ -26,7 +26,13 @@ def test_environment_initialization_generates_secrets_without_overwriting(tmp_pa
     values = dotenv_values(path)
     assert len(values["POSTGRES_PASSWORD"] or "") == 64
     assert len(values["MINIO_ROOT_PASSWORD"] or "") == 64
+    assert len(values["ML_SERVICE_API_KEY"] or "") == 64
+    assert values["MlInference__ApiKey"] == values["ML_SERVICE_API_KEY"]
     assert values["POSTGRES_PASSWORD"] != values["MINIO_ROOT_PASSWORD"]
+    assert values["ML_SERVICE_API_KEY"] not in {
+        values["POSTGRES_PASSWORD"],
+        values["MINIO_ROOT_PASSWORD"],
+    }
     original = path.read_bytes()
     with pytest.raises(FileExistsError):
         initialize(tmp_path)
@@ -59,6 +65,12 @@ def test_compose_has_real_dependencies_health_checks_and_no_unused_redis():
         assert "env_file" not in service
     assert "POSTGRES_PASSWORD" not in services["ml-inference"]["environment"]
     assert "MINIO_ROOT_PASSWORD" not in services["ml-inference"]["environment"]
+    assert services["ml-inference"]["environment"]["ML_SERVICE_API_KEY"].startswith(
+        "${ML_SERVICE_API_KEY:"
+    )
+    assert services["backend"]["environment"]["MlInference__ApiKey"].startswith(
+        "${ML_SERVICE_API_KEY:"
+    )
     assert services["ml-inference"]["volumes"] == [
         "./artifacts/models:/models:ro",
         "inference-data:/data/objects",

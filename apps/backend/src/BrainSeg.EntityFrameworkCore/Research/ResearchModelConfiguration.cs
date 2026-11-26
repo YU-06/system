@@ -1,3 +1,4 @@
+using BrainSeg.Storage;
 using Microsoft.EntityFrameworkCore;
 using Volo.Abp.EntityFrameworkCore.Modeling;
 
@@ -17,6 +18,8 @@ public static class ResearchModelConfiguration
             entity.Property(value => value.Modality).IsRequired().HasMaxLength(16);
             entity.Property(value => value.OriginalFileObjectKey).IsRequired().HasMaxLength(512);
             entity.Property(value => value.OriginalFileSha256).IsRequired().HasMaxLength(64);
+            entity.Property(value => value.GroundTruthObjectKey).HasMaxLength(512);
+            entity.Property(value => value.GroundTruthSha256).HasMaxLength(64);
             entity.HasIndex(value => value.StudyNumber).IsUnique().HasFilter("\"IsDeleted\" = false")
                 .HasDatabaseName("UX_BrainStudies_Number");
             entity.HasIndex(value => new { value.OriginalFileSha256, value.SliceIndex }).IsUnique()
@@ -56,11 +59,16 @@ public static class ResearchModelConfiguration
             entity.ConfigureByConvention();
             entity.Property(value => value.IdempotencyKey).IsRequired().HasMaxLength(128);
             entity.Property(value => value.CorrelationId).IsRequired().HasMaxLength(64);
+            entity.Property(value => value.InputSha256).HasMaxLength(64);
+            entity.Property(value => value.ModelSemanticVersion).HasMaxLength(64);
+            entity.Property(value => value.PreprocessingVersion).HasMaxLength(32);
+            entity.Property(value => value.WeightSha256).HasMaxLength(64);
             entity.Property(value => value.ErrorCode).HasMaxLength(128);
             entity.Property(value => value.ErrorMessage).HasMaxLength(256);
             entity.HasIndex(value => new { value.RequesterId, value.IdempotencyKey }).IsUnique()
                 .HasDatabaseName("UX_SegmentationJobs_Idempotency");
             entity.HasIndex(value => new { value.Status, value.RequestedTime });
+            entity.HasIndex(value => new { value.Status, value.LeaseExpiresAt });
             entity.HasIndex(value => new { value.StudyId, value.Status });
             entity.HasOne<BrainStudy>().WithMany().HasForeignKey(value => value.StudyId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne<ModelVersion>().WithMany().HasForeignKey(value => value.ModelVersionId).OnDelete(DeleteBehavior.Restrict);
@@ -76,8 +84,13 @@ public static class ResearchModelConfiguration
             });
             entity.ConfigureByConvention();
             entity.Property(value => value.MaskObjectKey).IsRequired().HasMaxLength(512);
-            entity.Property(value => value.OverlayObjectKey).IsRequired().HasMaxLength(512);
-            entity.Property(value => value.ContourObjectKey).IsRequired().HasMaxLength(512);
+            entity.Property(value => value.MaskSha256).HasMaxLength(64);
+            entity.Property(value => value.OverlayObjectKey).HasMaxLength(512);
+            entity.Property(value => value.ContourObjectKey).HasMaxLength(512);
+            entity.Property(value => value.RemotePredictionObjectKey).HasMaxLength(512);
+            entity.Property(value => value.RemotePredictionSha256).HasMaxLength(64);
+            entity.Property(value => value.GroundTruthSha256).HasMaxLength(64);
+            entity.Property(value => value.EvaluationProtocol).HasMaxLength(64);
             entity.HasIndex(value => value.JobId).IsUnique().HasDatabaseName("UX_SegmentationResults_Job");
             entity.HasIndex(value => value.CreatedTime);
             entity.HasOne<SegmentationJob>().WithMany().HasForeignKey(value => value.JobId).OnDelete(DeleteBehavior.Restrict);
@@ -97,6 +110,17 @@ public static class ResearchModelConfiguration
                 .IsUnique().HasDatabaseName("UX_ExperimentRuns_Reproducibility");
             entity.HasIndex(value => value.CreatedTime);
             entity.HasOne<ModelVersion>().WithMany().HasForeignKey(value => value.ModelVersionId).OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<ObjectWriteIntent>(entity =>
+        {
+            entity.ToTable("ObjectWriteIntents", table =>
+                table.HasCheckConstraint("CK_ObjectWriteIntents_AttemptCount", "\"AttemptCount\" >= 0"));
+            entity.ConfigureByConvention();
+            entity.Property(value => value.ObjectKey).IsRequired().HasMaxLength(512);
+            entity.Property(value => value.Purpose).IsRequired().HasMaxLength(32);
+            entity.HasIndex(value => value.ObjectKey).IsUnique().HasDatabaseName("UX_ObjectWriteIntents_ObjectKey");
+            entity.HasIndex(value => value.NextAttemptTime);
         });
     }
 }

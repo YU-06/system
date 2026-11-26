@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     model_manifest_path: Path | None = None
     object_storage_path: Path = Path("artifacts/inference-objects")
+    service_api_key: str | None = None
     max_upload_bytes: int = Field(default=67108864, gt=0, le=268435456)
     max_decompressed_bytes: int = Field(default=134217728, gt=0, le=536870912)
     max_volume_voxels: int = Field(default=16777216, gt=0, le=67108864)

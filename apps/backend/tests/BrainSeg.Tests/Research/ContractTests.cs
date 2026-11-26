@@ -17,7 +17,7 @@ public class ContractTests
         using var scope = factory.Services.CreateScope();
         var manager = scope.ServiceProvider.GetRequiredService<IPermissionDefinitionManager>();
         Assert.NotNull(await manager.GetAsync(ResearchPermissions.BrainStudies.Delete));
-        Assert.NotNull(await manager.GetAsync(ResearchPermissions.SegmentationJobs.Execute));
+        Assert.NotNull(await manager.GetAsync(ResearchPermissions.SegmentationJobs.Cancel));
         Assert.NotNull(await manager.GetAsync(ResearchPermissions.ModelVersions.Manage));
         var previous = CultureInfo.CurrentUICulture;
         try

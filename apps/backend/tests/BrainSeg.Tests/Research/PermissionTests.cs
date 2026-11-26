@@ -9,12 +9,8 @@ public class PermissionTests
 {
     [Theory]
     [InlineData("job-create")]
-    [InlineData("job-start")]
-    [InlineData("job-progress")]
-    [InlineData("job-fail")]
     [InlineData("job-cancel")]
     [InlineData("job-retry")]
-    [InlineData("job-complete")]
     [InlineData("model-create")]
     [InlineData("model-state")]
     [InlineData("experiment-create")]
@@ -32,10 +28,6 @@ public class PermissionTests
         {
             "job-create" => ("/api/app/segmentation-job", (object)new CreateSegmentationJobInput
             { StudyId = id, ModelVersionId = id, IdempotencyKey = "permission-test" }),
-            "job-progress" => ($"/api/app/segmentation-job/{id}/report-progress", new ReportJobProgressInput { ConcurrencyStamp = stamp, Progress = 10 }),
-            "job-fail" => ($"/api/app/segmentation-job/{id}/fail", new FailSegmentationJobInput { ConcurrencyStamp = stamp }),
-            "job-complete" => ($"/api/app/segmentation-job/{id}/complete", new CompleteSegmentationJobInput
-            { ConcurrencyStamp = stamp, MaskObjectKey = "mask.bin", OverlayObjectKey = "overlay.bin", ContourObjectKey = "contour.bin" }),
             "model-create" => ("/api/app/model-version", new CreateModelVersionInput
             { Name = "permission-test", SemanticVersion = "1.0.0", WeightObjectKey = "weights.bin", WeightSha256 = AggregateTests.Hash }),
             "model-state" => ($"/api/app/model-version/{id}/set-state", new ChangeModelStateInput { ConcurrencyStamp = stamp, IsActive = true }),
@@ -52,6 +44,18 @@ public class PermissionTests
         };
         using var response = await client.PostAsJsonAsync(path, body);
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Public_clients_cannot_submit_segmentation_results()
+    {
+        using var factory = new ResearchFactory();
+        await factory.InitializeAsync();
+        using var client = factory.AuthenticatedClient(ResearchPermissions.SegmentationJobs.Default,
+            ResearchPermissions.SegmentationJobs.Create);
+        using var response = await client.PostAsJsonAsync("/api/app/segmentation-job/" + Guid.NewGuid() + "/complete",
+            new { maskObjectKey = "caller-selected.bin" });
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
     [Fact]

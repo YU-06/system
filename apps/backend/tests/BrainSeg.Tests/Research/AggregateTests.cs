@@ -51,15 +51,15 @@ public class AggregateTests
     [Fact]
     public void Results_without_ground_truth_keep_metrics_null_and_compute_area_ratio()
     {
-        var result = new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(), ObjectKey(), ObjectKey(),
-            ObjectKey(), 32768, 10, 2, 1, Now);
+        var result = new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(), ObjectKey(), Hash,
+            null, null, 32768, 0.5, 10, 2, 1, Now);
         Assert.Null(result.Dice);
         Assert.Null(result.IoU);
         Assert.Equal(0.5, result.TumorAreaRatio);
         Assert.Throws<BusinessException>(() => new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(),
-            ObjectKey(), ObjectKey(), ObjectKey(), 1, 0, 0, 0, Now, dice: 1));
+            ObjectKey(), Hash, null, null, 1, 0.5, 0, 0, 0, Now, dice: 1));
         Assert.Throws<BusinessException>(() => new SegmentationResult(Guid.NewGuid(), Guid.NewGuid(),
-            ObjectKey(), ObjectKey(), ObjectKey(), 65537, 0, 0, 0, Now));
+            ObjectKey(), Hash, null, null, 65537, 0, 0, 0, 0, Now));
     }
 
     [Fact]

@@ -3,29 +3,31 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using BrainSeg.Storage;
 using Volo.Abp;
-using Volo.Abp.Content;
 using Volo.Abp.DependencyInjection;
 
 namespace BrainSeg.Research;
 
-public sealed record ValidatedStudyFile(byte[] OriginalBytes, string Sha256, int Width, int Height);
+public sealed record ValidatedStudyFile(string Sha256, int Width, int Height);
 
 public class ResearchArtifactService(IObjectStorage storage) : ITransientDependency
 {
     private const int MaxFileBytes = 64 * 1024 * 1024;
     private const int MaxExpandedBytes = 128 * 1024 * 1024;
 
-    public async Task<ValidatedStudyFile> ReadStudyAsync(IRemoteStreamContent file, int sliceIndex,
-        CancellationToken cancellationToken)
+    public async Task<ValidatedStudyFile> ValidateStoredStudyAsync(string objectKey, string? fileName,
+        string? contentType, string expectedSha256, int sliceIndex, CancellationToken cancellationToken)
     {
-        var name = (file.FileName ?? string.Empty).ToLowerInvariant();
+        var name = (fileName ?? string.Empty).ToLowerInvariant();
         if (!name.EndsWith(".nii", StringComparison.Ordinal) && !name.EndsWith(".nii.gz", StringComparison.Ordinal)
-            || file.ContentType is not ("application/octet-stream" or "application/gzip" or "application/x-gzip" or "application/x-nifti"))
+            || contentType is not ("application/octet-stream" or "application/gzip" or "application/x-gzip" or "application/x-nifti"))
         {
             throw new BusinessException(ResearchErrors.InvalidFile);
         }
-        await using var stream = file.GetStream();
+        await using var stream = await storage.OpenReadAsync(objectKey, cancellationToken);
         var original = await ReadBoundedAsync(stream, MaxFileBytes, cancellationToken);
+        var sha256 = Convert.ToHexStringLower(SHA256.HashData(original));
+        if (!string.Equals(sha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new BusinessException(ResearchErrors.ArtifactHashMismatch);
         var bytes = original;
         if (name.EndsWith(".gz", StringComparison.Ordinal))
         {
@@ -75,7 +77,7 @@ public class ResearchArtifactService(IObjectStorage storage) : ITransientDepende
         {
             throw new BusinessException(ResearchErrors.InvalidFile);
         }
-        return new ValidatedStudyFile(original, Convert.ToHexStringLower(SHA256.HashData(original)), width, height);
+        return new ValidatedStudyFile(sha256, width, height);
     }
 
     public async Task VerifyAsync(string key, string? expectedHash, CancellationToken cancellationToken)

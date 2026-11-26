@@ -13,13 +13,6 @@
 @gitCommit = {{$processEnv BRAINSEG_EXPERIMENT_GIT_COMMIT}}
 @configHash = {{$processEnv BRAINSEG_CONFIG_HASH}}
 @splitHash = {{$processEnv BRAINSEG_SPLIT_HASH}}
-@maskKey = {{$processEnv BRAINSEG_MASK_OBJECT_KEY}}
-@overlayKey = {{$processEnv BRAINSEG_OVERLAY_OBJECT_KEY}}
-@contourKey = {{$processEnv BRAINSEG_CONTOUR_OBJECT_KEY}}
-@areaPixels = {{$processEnv BRAINSEG_TUMOR_AREA_PIXELS}}
-@inferenceMilliseconds = {{$processEnv BRAINSEG_INFERENCE_MILLISECONDS}}
-@preprocessingMilliseconds = {{$processEnv BRAINSEG_PREPROCESSING_MILLISECONDS}}
-@postprocessingMilliseconds = {{$processEnv BRAINSEG_POSTPROCESSING_MILLISECONDS}}
 @validatedThreshold = {{$processEnv BRAINSEG_VALIDATED_THRESHOLD}}
 
 ### List studies
@@ -53,6 +46,29 @@ Content-Type: application/octet-stream
 
 < ../../data/research-flair.nii
 --BrainSegBoundary--
+
+### Register ground truth for separate authorized evaluation
+POST {{baseUrl}}/api/app/brain-study/{{studyId}}/register-ground-truth
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=BrainSegGroundTruthBoundary
+
+--BrainSegGroundTruthBoundary
+Content-Disposition: form-data; name="File"; filename="ground-truth.nii.gz"
+Content-Type: application/gzip
+
+< ../../data/ground-truth.nii.gz
+--BrainSegGroundTruthBoundary--
+
+### Download registered ground truth; requires result-download permission
+GET {{baseUrl}}/api/app/brain-study/{{studyId}}/download-ground-truth
+Authorization: Bearer {{accessToken}}
+
+### Delete registered ground truth and clear dependent evaluation metrics
+DELETE {{baseUrl}}/api/app/brain-study/{{studyId}}/delete-ground-truth
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
 
 ### Update pseudonym; a stale stamp returns 409
 PUT {{baseUrl}}/api/app/brain-study/{{studyId}}
@@ -88,33 +104,7 @@ X-Correlation-Id: authorized-research-request-001
 
 {"studyId":"{{studyId}}","modelVersionId":"{{modelId}}","idempotencyKey":"authorized-request-001"}
 
-### Start, worker permission required
-POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/start
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{"concurrencyStamp":"{{stamp}}"}
-
-### Report monotonic progress; use the fresh stamp from the prior response
-POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/report-progress
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{"concurrencyStamp":"{{stamp}}","progress":50}
-
-### Complete using real persisted mask/overlay/contour keys; metrics omitted without labels
-POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/complete
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{"concurrencyStamp":"{{stamp}}","maskObjectKey":"{{maskKey}}","overlayObjectKey":"{{overlayKey}}","contourObjectKey":"{{contourKey}}","tumorAreaPixels":{{areaPixels}},"inferenceMilliseconds":{{inferenceMilliseconds}},"preprocessingMilliseconds":{{preprocessingMilliseconds}},"postprocessingMilliseconds":{{postprocessingMilliseconds}}}
-
-### Record a failed execution, never submit raw stack traces
-POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/fail
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{"concurrencyStamp":"{{stamp}}","reason":"InferenceTimeout"}
+### The persistent worker polls Pending jobs; callers cannot start, fail, or submit results directly
 
 ### Cancel a Pending/Running job
 POST {{baseUrl}}/api/app/segmentation-job/{{jobId}}/cancel
@@ -159,6 +149,17 @@ Authorization: Bearer {{accessToken}}
 ### Get a result
 GET {{baseUrl}}/api/app/segmentation-result/{{resultId}}
 Authorization: Bearer {{accessToken}}
+
+### Download authorized result mask
+GET {{baseUrl}}/api/app/segmentation-result/{{resultId}}/download-mask
+Authorization: Bearer {{accessToken}}
+
+### Evaluate against the separately registered ground truth
+POST {{baseUrl}}/api/app/segmentation-result/{{resultId}}/evaluate
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{"concurrencyStamp":"{{stamp}}"}
 
 ### List experiments
 GET {{baseUrl}}/api/app/experiment-run?modelVersionId={{modelId}}&randomSeed=42&sorting=createdTime%20desc

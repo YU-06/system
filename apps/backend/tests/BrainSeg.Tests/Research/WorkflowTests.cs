@@ -42,7 +42,7 @@ public class WorkflowTests
     }
 
     [Fact]
-    public async Task Idempotent_jobs_complete_once_and_soft_deleted_studies_retain_results()
+    public async Task Jobs_are_idempotent_worker_completed_and_retained_after_study_deletion()
     {
         using var factory = new ResearchFactory();
         await factory.InitializeAsync();
@@ -54,24 +54,39 @@ public class WorkflowTests
         Assert.Equal(job.Id, repeated.Id);
         var study = (await client.GetFromJsonAsync<BrainStudyDto>($"/api/app/brain-study/{seed.Study.Id}"))!;
         Assert.Equal(1, study.JobRequestCount);
+        var activeJob = await PostAsync<SegmentationJobDto>(client, "/api/app/segmentation-job",
+            new CreateSegmentationJobInput
+            {
+                StudyId = seed.Study.Id,
+                ModelVersionId = seed.Model.Id,
+                IdempotencyKey = "workflow-active-key"
+            });
+        study = (await client.GetFromJsonAsync<BrainStudyDto>($"/api/app/brain-study/{seed.Study.Id}"))!;
+        Assert.Equal(2, study.JobRequestCount);
         using var blockedDelete = new HttpRequestMessage(HttpMethod.Delete,
             $"/api/app/brain-study/{study.Id}?concurrencyStamp={Uri.EscapeDataString(study.ConcurrencyStamp)}");
         using var blocked = await client.SendAsync(blockedDelete);
         Assert.Equal(HttpStatusCode.Conflict, blocked.StatusCode);
         Assert.Contains(ResearchErrors.StudyHasActiveJobs, await blocked.Content.ReadAsStringAsync());
-        job = await PostAsync<SegmentationJobDto>(client, $"/api/app/segmentation-job/{job.Id}/start",
-            new ResearchCommandInput { ConcurrencyStamp = job.ConcurrencyStamp });
-        var result = await PostAsync<SegmentationResultDto>(client, $"/api/app/segmentation-job/{job.Id}/complete",
-            new CompleteSegmentationJobInput
-            {
-                ConcurrencyStamp = job.ConcurrencyStamp,
-                MaskObjectKey = seed.Artifact,
-                OverlayObjectKey = seed.Artifact,
-                ContourObjectKey = seed.Artifact,
-                TumorAreaPixels = 3,
-                InferenceMilliseconds = 1
-            });
-        Assert.Null(result.Dice);
+        SegmentationResult result = null!;
+        await factory.RunAsync(async services =>
+        {
+            var jobs = services.GetRequiredService<ISegmentationJobRepository>();
+            var completedJob = await jobs.GetAsync(job.Id);
+            var startedAt = DateTime.UtcNow;
+            completedJob.Start(startedAt, startedAt.AddMinutes(5), Guid.NewGuid());
+            completedJob.Complete(startedAt.AddSeconds(1));
+            await jobs.UpdateAsync(completedJob, autoSave: true);
+            result = new SegmentationResult(Guid.NewGuid(), completedJob.Id, seed.Artifact,
+                seed.Model.WeightSha256, null, null, 3, 3 / (8.0 * 8 * 2), 1, 0, 0,
+                startedAt.AddSeconds(1));
+            await services.GetRequiredService<ISegmentationResultRepository>()
+                .InsertAsync(result, autoSave: true);
+        });
+        var cancelledJob = await PostAsync<SegmentationJobDto>(client,
+            $"/api/app/segmentation-job/{activeJob.Id}/cancel",
+            new ResearchCommandInput { ConcurrencyStamp = activeJob.ConcurrencyStamp });
+        Assert.Equal(SegmentationJobStatus.Cancelled, cancelledJob.Status);
         using var deletion = new HttpRequestMessage(HttpMethod.Delete,
             $"/api/app/brain-study/{study.Id}?concurrencyStamp={Uri.EscapeDataString(study.ConcurrencyStamp)}");
         using var deleted = await client.SendAsync(deletion);
@@ -124,7 +139,7 @@ public class WorkflowTests
     }
 
     [Fact]
-    public async Task Failed_completion_does_not_persist_success_or_partial_results()
+    public async Task Public_completion_endpoint_is_not_available_for_caller_supplied_results()
     {
         using var factory = new ResearchFactory();
         await factory.InitializeAsync();
@@ -132,28 +147,11 @@ public class WorkflowTests
         using var client = factory.AuthenticatedClient(Permissions);
         var job = await PostAsync<SegmentationJobDto>(client, "/api/app/segmentation-job", new CreateSegmentationJobInput
         { StudyId = seed.Study.Id, ModelVersionId = seed.Model.Id, IdempotencyKey = "atomic-completion" });
-        using var premature = await client.PostAsJsonAsync($"/api/app/segmentation-job/{job.Id}/complete",
-            new CompleteSegmentationJobInput
-            {
-                ConcurrencyStamp = job.ConcurrencyStamp,
-                MaskObjectKey = seed.Artifact,
-                OverlayObjectKey = seed.Artifact,
-                ContourObjectKey = seed.Artifact
-            });
-        Assert.Equal(HttpStatusCode.Conflict, premature.StatusCode);
-        job = await PostAsync<SegmentationJobDto>(client, $"/api/app/segmentation-job/{job.Id}/start",
-            new ResearchCommandInput { ConcurrencyStamp = job.ConcurrencyStamp });
         using var missing = await client.PostAsJsonAsync($"/api/app/segmentation-job/{job.Id}/complete",
-            new CompleteSegmentationJobInput
-            {
-                ConcurrencyStamp = job.ConcurrencyStamp,
-                MaskObjectKey = AggregateTests.ObjectKey(),
-                OverlayObjectKey = seed.Artifact,
-                ContourObjectKey = seed.Artifact
-            });
+            new { maskObjectKey = AggregateTests.ObjectKey() });
         Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
         var unchanged = (await client.GetFromJsonAsync<SegmentationJobDto>($"/api/app/segmentation-job/{job.Id}"))!;
-        Assert.Equal(SegmentationJobStatus.Running, unchanged.Status);
+        Assert.Equal(SegmentationJobStatus.Pending, unchanged.Status);
         Assert.Null(unchanged.CompletedTime);
         Assert.Equal(job.ConcurrencyStamp, unchanged.ConcurrencyStamp);
         await factory.RunAsync(async services => Assert.Equal(0,

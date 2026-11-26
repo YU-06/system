@@ -1,4 +1,5 @@
 using BrainSeg.Research;
+using BrainSeg.Storage;
 using Microsoft.EntityFrameworkCore;
 using Volo.Abp.AuditLogging.EntityFrameworkCore;
 using Volo.Abp.Data;
@@ -18,6 +19,7 @@ public class BrainSegDbContext(DbContextOptions<BrainSegDbContext> options) : Ab
     public DbSet<ModelVersion> ModelVersions => Set<ModelVersion>();
     public DbSet<SegmentationResult> SegmentationResults => Set<SegmentationResult>();
     public DbSet<ExperimentRun> ExperimentRuns => Set<ExperimentRun>();
+    public DbSet<ObjectWriteIntent> ObjectWriteIntents => Set<ObjectWriteIntent>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

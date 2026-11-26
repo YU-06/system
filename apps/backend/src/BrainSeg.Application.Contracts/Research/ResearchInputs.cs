@@ -52,6 +52,12 @@ public sealed class UploadBrainStudyInput
     public IRemoteStreamContent File { get; set; } = null!;
 }
 
+public sealed class UploadGroundTruthInput
+{
+    [Required, DisableAuditing]
+    public IRemoteStreamContent File { get; set; } = null!;
+}
+
 public class ResearchCommandInput
 {
     [Required, StringLength(40, MinimumLength = 1)]
@@ -70,36 +76,6 @@ public sealed class CreateSegmentationJobInput
     public Guid ModelVersionId { get; set; }
     [Required, StringLength(128)]
     public string IdempotencyKey { get; set; } = string.Empty;
-}
-
-public sealed class ReportJobProgressInput : ResearchCommandInput
-{
-    [Range(0, 99)]
-    public int Progress { get; set; }
-}
-
-public sealed class FailSegmentationJobInput : ResearchCommandInput
-{
-    public JobFailureReason Reason { get; set; }
-}
-
-public sealed class CompleteSegmentationJobInput : ResearchCommandInput
-{
-    [Required, StringLength(512)]
-    public string MaskObjectKey { get; set; } = string.Empty;
-    [Required, StringLength(512)]
-    public string OverlayObjectKey { get; set; } = string.Empty;
-    [Required, StringLength(512)]
-    public string ContourObjectKey { get; set; } = string.Empty;
-    [Range(0, 65536)]
-    public int TumorAreaPixels { get; set; }
-    public double InferenceMilliseconds { get; set; }
-    public double PreprocessingMilliseconds { get; set; }
-    public double PostprocessingMilliseconds { get; set; }
-    public double? Dice { get; set; }
-    public double? IoU { get; set; }
-    public double? Precision { get; set; }
-    public double? Recall { get; set; }
 }
 
 public sealed class CreateModelVersionInput

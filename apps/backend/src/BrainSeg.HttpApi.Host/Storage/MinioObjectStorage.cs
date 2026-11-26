@@ -19,32 +19,52 @@ public sealed class MinioObjectStorage : IObjectStorage, IDisposable
             .WithSSL(endpoint.Scheme == Uri.UriSchemeHttps).Build();
     }
 
-    public async Task<StoredObject> SaveAsync(Stream content, CancellationToken cancellationToken = default)
+    public Task<StoredObject> SaveAsync(Stream content, CancellationToken cancellationToken = default) =>
+        SaveAsync($"{Guid.NewGuid():N}.bin", content, cancellationToken);
+
+    public async Task<StoredObject> SaveAsync(string objectKey, Stream content,
+        CancellationToken cancellationToken = default)
     {
-        var payload = await StoragePayload.ReadAsync(content, maxBytes, cancellationToken);
-        if (!await client.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket), cancellationToken))
+        var payload = await StoragePayload.CopyToTemporaryFileAsync(content, Path.GetTempPath(),
+            objectKey, maxBytes, cancellationToken);
+        try
         {
-            await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken);
+            if (!await client.BucketExistsAsync(new BucketExistsArgs().WithBucket(bucket), cancellationToken))
+            {
+                await client.MakeBucketAsync(new MakeBucketArgs().WithBucket(bucket), cancellationToken);
+            }
+            await using var stream = new FileStream(payload.TemporaryPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await client.PutObjectAsync(new PutObjectArgs().WithBucket(bucket).WithObject(payload.Object.ObjectKey)
+                .WithStreamData(stream).WithObjectSize(payload.Object.SizeBytes)
+                .WithContentType("application/octet-stream"), cancellationToken);
+            return payload.Object;
         }
-        using var stream = new MemoryStream(payload.Bytes, writable: false);
-        await client.PutObjectAsync(new PutObjectArgs().WithBucket(bucket).WithObject(payload.Object.ObjectKey)
-            .WithStreamData(stream).WithObjectSize(stream.Length).WithContentType("application/octet-stream"), cancellationToken);
-        return payload.Object;
+        finally
+        {
+            File.Delete(payload.TemporaryPath);
+        }
     }
 
     public async Task<Stream> OpenReadAsync(string objectKey, CancellationToken cancellationToken = default)
     {
-        var result = new MemoryStream();
+        var temporaryPath = Path.Combine(Path.GetTempPath(), $"brainseg-{Guid.NewGuid():N}.tmp");
         try
         {
             await client.GetObjectAsync(new GetObjectArgs().WithBucket(bucket)
-                .WithObject(StoragePayload.ValidateKey(objectKey)).WithCallbackStream(stream => stream.CopyTo(result)), cancellationToken);
-            result.Position = 0;
-            return result;
+                .WithObject(StoragePayload.ValidateKey(objectKey))
+                .WithCallbackStream(stream =>
+                {
+                    using var target = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
+                        FileShare.None, 81920, FileOptions.SequentialScan);
+                    stream.CopyTo(target, 81920);
+                }), cancellationToken);
+            return new FileStream(temporaryPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                81920, FileOptions.Asynchronous | FileOptions.SequentialScan | FileOptions.DeleteOnClose);
         }
         catch
         {
-            await result.DisposeAsync();
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
             throw;
         }
     }

@@ -6,8 +6,8 @@ public class CorrelationIdHandler(ICorrelationIdProvider correlationIdProvider) 
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        request.Headers.Remove(SafeCorrelationMiddleware.HeaderName);
-        request.Headers.TryAddWithoutValidation(SafeCorrelationMiddleware.HeaderName, correlationIdProvider.Get());
+        if (!request.Headers.Contains(SafeCorrelationMiddleware.HeaderName))
+            request.Headers.TryAddWithoutValidation(SafeCorrelationMiddleware.HeaderName, correlationIdProvider.Get());
         return base.SendAsync(request, cancellationToken);
     }
 }

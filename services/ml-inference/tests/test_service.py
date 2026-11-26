@@ -14,11 +14,25 @@ from brainseg_inference.app import create_app
 from brainseg_inference.errors import ServiceError
 from brainseg_inference.logging import JsonFormatter, correlation_id
 from brainseg_inference.manifest import ModelManifest
-from brainseg_inference.runtime import OnnxPredictor
+from brainseg_inference.runtime import OnnxPredictor, Predictor
 from brainseg_inference.settings import Settings
 from fastapi.testclient import TestClient
 from numpy.typing import NDArray
 from onnx import TensorProto, helper
+
+TEST_API_KEY = "test-service-key-for-inference-contract"
+
+
+def service_settings(**values: object) -> Settings:
+    values.setdefault("service_api_key", TEST_API_KEY)
+    return Settings(_env_file=None, **values)
+
+
+def authenticated_client(settings: Settings, predictor: Predictor | None = None) -> TestClient:
+    return TestClient(
+        create_app(settings, predictor),
+        headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+    )
 
 
 class PositivePredictor:
@@ -59,8 +73,8 @@ def volume_bytes(
 
 
 def test_unconfigured_model_is_alive_but_not_ready(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
-    with TestClient(create_app(settings)) as client:
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings) as client:
         assert client.get("/health").status_code == 200
         response = client.get("/ready")
         assert response.status_code == 503
@@ -69,8 +83,8 @@ def test_unconfigured_model_is_alive_but_not_ready(tmp_path: Path):
 
 
 def test_correlation_id_is_shared_by_header_and_payload(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
-    with TestClient(create_app(settings)) as client:
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings) as client:
         response = client.get("/health", headers={"X-Correlation-Id": "research_request-123"})
         assert response.headers["X-Correlation-Id"] == "research_request-123"
         assert response.json()["correlationId"] == "research_request-123"
@@ -79,12 +93,11 @@ def test_correlation_id_is_shared_by_header_and_payload(tmp_path: Path):
 
 
 def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path: Path):
-    settings = Settings(
-        _env_file=None,
+    settings = service_settings(
         object_storage_path=tmp_path,
         model_manifest_path=None,
     )
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    with authenticated_client(settings, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment",
             headers={"X-Correlation-Id": "volume-request-1"},
@@ -107,6 +120,7 @@ def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path:
         assert {path.name for path in tmp_path.iterdir()} == {
             result["predictionObjectKey"],
             f"{result['predictionObjectKey']}.json",
+            f".request-{result['requestId']}.json",
         }
         artifact_metadata = json.loads(
             (tmp_path / f"{result['predictionObjectKey']}.json").read_text(encoding="utf-8")
@@ -116,6 +130,8 @@ def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path:
         assert result["tumorAreaPixels"] == 8 * 10 * 3
         assert "Not for clinical diagnosis" in result["disclaimer"]
         assert result["timings"]["inferenceMilliseconds"] >= 0
+        assert result["inputSize"] == 256
+        assert result["weightSha256"] is None
 
         with gzip.open(tmp_path / result["predictionObjectKey"], "rb") as stream:
             mask_image = nib.Nifti1Image.from_bytes(stream.read())
@@ -126,8 +142,8 @@ def test_full_volume_segmentation_round_trips_original_shape_and_space(tmp_path:
 
 
 def test_gzip_nifti_is_accepted_for_full_volume_inference(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment",
             files={
@@ -142,13 +158,131 @@ def test_gzip_nifti_is_accepted_for_full_volume_inference(tmp_path: Path):
         assert response.json()["maskShape"] == [8, 10, 3]
 
 
+def test_segment_request_id_replays_the_same_artifact_and_rejects_reuse(tmp_path: Path):
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings, PositivePredictor()) as client:
+        source = volume_bytes()
+        first = client.post(
+            "/v1/segment",
+            data={"requestId": "job-attempt-0"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        replay = client.post(
+            "/v1/segment",
+            data={"requestId": "job-attempt-0"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        assert first.status_code == replay.status_code == 200
+        assert first.json()["predictionObjectKey"] == replay.json()["predictionObjectKey"]
+        assert len(list(tmp_path.glob("*.nii.gz"))) == 1
+        (tmp_path / ".request-job-attempt-0.json").unlink()
+        recovered = client.post(
+            "/v1/segment",
+            data={"requestId": "job-attempt-0"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        assert recovered.status_code == 200
+        assert recovered.json()["predictionObjectKey"] == first.json()["predictionObjectKey"]
+        assert len(list(tmp_path.glob("*.nii.gz"))) == 1
+
+        conflict = client.post(
+            "/v1/segment",
+            data={"requestId": "job-attempt-0"},
+            files={
+                "file": (
+                    "different.nii",
+                    volume_bytes(np.zeros((8, 10, 3), dtype=np.float32)),
+                    "application/octet-stream",
+                )
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("predictionSha256", "0" * 64),
+        ("requestId", "different-request"),
+        ("inputSha256", "0" * 64),
+    ],
+)
+def test_prediction_sidecar_rejects_tampered_replay_response(
+    tmp_path: Path, field: str, value: str
+):
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings, PositivePredictor()) as client:
+        source = volume_bytes()
+        first = client.post(
+            "/v1/segment",
+            data={"requestId": "tamper-probe"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        assert first.status_code == 200
+        object_key = first.json()["predictionObjectKey"]
+        sidecar_path = tmp_path / f"{object_key}.json"
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        sidecar["response"][field] = value
+        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+        (tmp_path / ".request-tamper-probe.json").unlink()
+
+        replay = client.post(
+            "/v1/segment",
+            data={"requestId": "tamper-probe"},
+            files={"file": ("source.nii", source, "application/octet-stream")},
+        )
+        assert replay.status_code == 409
+        assert replay.json()["error"]["code"] == "REQUEST_RECEIPT_INVALID"
+
+
+def test_internal_service_key_protects_inference_and_prediction_download(tmp_path: Path):
+    settings = Settings(
+        _env_file=None, object_storage_path=tmp_path, service_api_key="service-test-key"
+    )
+    with TestClient(create_app(settings, PositivePredictor())) as client:
+        payload = volume_bytes()
+        denied = client.post(
+            "/v1/segment",
+            files={"file": ("source.nii", payload, "application/octet-stream")},
+        )
+        assert denied.status_code == 401
+        headers = {"Authorization": "Bearer service-test-key"}
+        response = client.post(
+            "/v1/segment",
+            headers=headers,
+            data={"requestId": "authenticated-job"},
+            files={"file": ("source.nii", payload, "application/octet-stream")},
+        )
+        assert response.status_code == 200
+        artifact = response.json()
+        downloaded = client.get(
+            f"/v1/predictions/{artifact['predictionObjectKey']}", headers=headers
+        )
+        assert downloaded.status_code == 200
+        assert downloaded.headers["X-Prediction-Sha256"] == artifact["predictionSha256"]
+        assert hashlib.sha256(downloaded.content).hexdigest() == artifact["predictionSha256"]
+        assert client.get(f"/v1/predictions/{artifact['predictionObjectKey']}").status_code == 401
+
+
+def test_inference_fails_closed_when_service_authentication_is_unconfigured(tmp_path: Path):
+    settings = Settings(_env_file=None, object_storage_path=tmp_path)
+    with TestClient(create_app(settings, PositivePredictor())) as client:
+        response = client.post(
+            "/v1/segment",
+            files={"file": ("source.nii", volume_bytes(), "application/octet-stream")},
+        )
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "SERVICE_AUTH_NOT_CONFIGURED"
+
+
 def test_evaluate_requires_traceable_prediction_and_reports_patient_and_slice_metrics(
     tmp_path: Path,
 ):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
+    settings = service_settings(object_storage_path=tmp_path)
     source = volume_bytes()
     truth = volume_bytes(np.full((8, 10, 3), 4, dtype=np.float32))
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    with authenticated_client(settings, PositivePredictor()) as client:
         segmentation = client.post(
             "/v1/segment",
             files={"file": ("source.nii", source, "application/octet-stream")},
@@ -169,12 +303,14 @@ def test_evaluate_requires_traceable_prediction_and_reports_patient_and_slice_me
         assert result["sliceMacroMetrics"]["dice"] == 1
         assert result["sliceCount"] == 3
         assert result["groundTruthSha256"] == hashlib.sha256(truth).hexdigest()
+        assert result["requestId"] == segmentation["requestId"]
+        assert result["weightSha256"] is None
 
 
 def test_empty_masks_have_defined_metrics(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
+    settings = service_settings(object_storage_path=tmp_path)
     zeros = volume_bytes(np.zeros((8, 10, 3), dtype=np.float32))
-    with TestClient(create_app(settings, EmptyPredictor())) as client:
+    with authenticated_client(settings, EmptyPredictor()) as client:
         segmentation = client.post(
             "/v1/segment",
             files={"file": ("source.nii", zeros, "application/octet-stream")},
@@ -197,9 +333,9 @@ def test_empty_masks_have_defined_metrics(tmp_path: Path):
 
 
 def test_evaluate_rejects_spatial_mismatch_and_unrelated_source(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
+    settings = service_settings(object_storage_path=tmp_path)
     source = volume_bytes()
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    with authenticated_client(settings, PositivePredictor()) as client:
         segmentation = client.post(
             "/v1/segment",
             files={"file": ("source.nii", source, "application/octet-stream")},
@@ -243,8 +379,8 @@ def test_evaluate_rejects_spatial_mismatch_and_unrelated_source(tmp_path: Path):
 
 
 def test_invalid_type_nifti_and_values_return_safe_errors(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings, PositivePredictor()) as client:
         invalid_type = client.post(
             "/v1/segment", files={"file": ("fixture.txt", b"invalid", "text/plain")}
         )
@@ -265,7 +401,7 @@ def test_invalid_type_nifti_and_values_return_safe_errors(tmp_path: Path):
 
 
 def test_non_axial_axis_order_is_rejected_without_reorientation(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
+    settings = service_settings(object_storage_path=tmp_path)
     affine = np.array(
         [
             [0, 0, 2.0, 0],
@@ -274,7 +410,7 @@ def test_non_axial_axis_order_is_rejected_without_reorientation(tmp_path: Path):
             [0, 0, 0, 1],
         ]
     )
-    with TestClient(create_app(settings, PositivePredictor())) as client:
+    with authenticated_client(settings, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment",
             files={
@@ -290,20 +426,17 @@ def test_non_axial_axis_order_is_rejected_without_reorientation(tmp_path: Path):
 
 
 def test_upload_decompression_and_dimension_limits(tmp_path: Path):
-    upload_limited = Settings(
-        _env_file=None, max_upload_bytes=2, object_storage_path=tmp_path / "upload"
-    )
-    with TestClient(create_app(upload_limited, PositivePredictor())) as client:
+    upload_limited = service_settings(max_upload_bytes=2, object_storage_path=tmp_path / "upload")
+    with authenticated_client(upload_limited, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment", files={"file": ("fixture.nii", b"123", "application/octet-stream")}
         )
         assert response.status_code == 413
-    expanded_limited = Settings(
-        _env_file=None,
+    expanded_limited = service_settings(
         max_decompressed_bytes=100,
         object_storage_path=tmp_path / "expanded",
     )
-    with TestClient(create_app(expanded_limited, PositivePredictor())) as client:
+    with authenticated_client(expanded_limited, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment",
             files={
@@ -316,12 +449,11 @@ def test_upload_decompression_and_dimension_limits(tmp_path: Path):
         )
         assert response.status_code == 413
         assert response.json()["error"]["code"] == "VOLUME_TOO_LARGE"
-    dimension_limited = Settings(
-        _env_file=None,
+    dimension_limited = service_settings(
         max_volume_dimension=7,
         object_storage_path=tmp_path / "dimensions",
     )
-    with TestClient(create_app(dimension_limited, PositivePredictor())) as client:
+    with authenticated_client(dimension_limited, PositivePredictor()) as client:
         response = client.post(
             "/v1/segment",
             files={"file": ("fixture.nii", volume_bytes(), "application/octet-stream")},
@@ -330,8 +462,8 @@ def test_upload_decompression_and_dimension_limits(tmp_path: Path):
 
 
 def test_valid_input_cannot_run_without_a_model(tmp_path: Path):
-    settings = Settings(_env_file=None, object_storage_path=tmp_path)
-    with TestClient(create_app(settings)) as client:
+    settings = service_settings(object_storage_path=tmp_path)
+    with authenticated_client(settings) as client:
         response = client.post(
             "/v1/segment",
             files={"file": ("fixture.nii", volume_bytes(), "application/octet-stream")},
@@ -341,12 +473,11 @@ def test_valid_input_cannot_run_without_a_model(tmp_path: Path):
 
 
 def test_deadline_is_enforced_and_prediction_reference_is_not_a_path(tmp_path: Path):
-    settings = Settings(
-        _env_file=None,
+    settings = service_settings(
         object_storage_path=tmp_path,
         request_timeout_seconds=0.01,
     )
-    with TestClient(create_app(settings, SlowPredictor())) as client:
+    with authenticated_client(settings, SlowPredictor()) as client:
         response = client.post(
             "/v1/segment",
             files={"file": ("fixture.nii", volume_bytes(), "application/octet-stream")},

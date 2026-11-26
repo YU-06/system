@@ -10,7 +10,8 @@ public class ResearchAutoMapperProfile : Profile
         CreateMap<SegmentationJob, SegmentationJobDto>()
             .ForMember(destination => destination.RequestedTime, options => options.MapFrom(source => Utc(source.RequestedTime)))
             .ForMember(destination => destination.StartedTime, options => options.MapFrom(source => OptionalUtc(source.StartedTime)))
-            .ForMember(destination => destination.CompletedTime, options => options.MapFrom(source => OptionalUtc(source.CompletedTime)));
+            .ForMember(destination => destination.CompletedTime, options => options.MapFrom(source => OptionalUtc(source.CompletedTime)))
+            .ForMember(destination => destination.LeaseExpiresAt, options => options.MapFrom(source => OptionalUtc(source.LeaseExpiresAt)));
         CreateMap<ModelVersion, ModelVersionDto>()
             .ForMember(destination => destination.PublishedTime, options => options.MapFrom(source => OptionalUtc(source.PublishedTime)));
         CreateMap<SegmentationResult, SegmentationResultDto>()

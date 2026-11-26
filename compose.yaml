@@ -16,6 +16,7 @@ x-backend-environment: &backend-environment
   MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Run the environment initialization script first}
   MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Run the environment initialization script first}
   MlInference__BaseUrl: http://ml-inference:8000
+  MlInference__ApiKey: ${ML_SERVICE_API_KEY:?Run the environment initialization script first}
 
 services:
   postgres:
@@ -128,6 +129,7 @@ services:
       ML_MAX_VOLUME_DIMENSION: ${ML_MAX_VOLUME_DIMENSION:-512}
       ML_MAX_INFERENCE_BATCH_SIZE: ${ML_MAX_INFERENCE_BATCH_SIZE:-16}
       ML_REQUEST_TIMEOUT_SECONDS: ${ML_REQUEST_TIMEOUT_SECONDS:-30}
+      ML_SERVICE_API_KEY: ${ML_SERVICE_API_KEY:?Run the environment initialization script first}
     volumes:
       - ./artifacts/models:/models:ro
       - inference-data:/data/objects

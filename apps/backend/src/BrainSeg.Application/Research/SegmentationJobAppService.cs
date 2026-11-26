@@ -12,7 +12,7 @@ namespace BrainSeg.Research;
 
 [Authorize(ResearchPermissions.SegmentationJobs.Default)]
 public class SegmentationJobAppService(ISegmentationJobRepository jobs, IBrainStudyRepository studies,
-    IModelVersionRepository models, ISegmentationResultRepository results, ResearchArtifactService artifacts,
+    IModelVersionRepository models,
     ICorrelationIdProvider correlationIdProvider) : ResearchAppService, ISegmentationJobAppService
 {
     private static readonly IReadOnlyDictionary<string, Expression<Func<SegmentationJob, object>>> Sorting =
@@ -48,9 +48,7 @@ public class SegmentationJobAppService(ISegmentationJobRepository jobs, IBrainSt
         var requester = CurrentUser.Id ?? throw new AbpAuthorizationException("A user identity is required to request a job.");
         var correlation = correlationIdProvider.Get();
         if (string.IsNullOrEmpty(correlation)) correlation = GuidGenerator.Create().ToString("N");
-        var candidate = new SegmentationJob(GuidGenerator.Create(), input.StudyId, input.ModelVersionId,
-            requester, input.IdempotencyKey, correlation, Clock.Now);
-        var existing = await jobs.FindAsync(value => value.RequesterId == requester && value.IdempotencyKey == candidate.IdempotencyKey,
+        var existing = await jobs.FindAsync(value => value.RequesterId == requester && value.IdempotencyKey == input.IdempotencyKey,
             cancellationToken: cancellationToken);
         if (existing is not null)
         {
@@ -59,35 +57,16 @@ public class SegmentationJobAppService(ISegmentationJobRepository jobs, IBrainSt
             return Map<SegmentationJob, SegmentationJobDto>(existing);
         }
         var study = await studies.GetAsync(input.StudyId, cancellationToken: cancellationToken);
-        (await models.GetAsync(input.ModelVersionId, cancellationToken: cancellationToken)).EnsureActive();
+        var model = await models.GetAsync(input.ModelVersionId, cancellationToken: cancellationToken);
+        model.EnsureActive();
+        var candidate = new SegmentationJob(GuidGenerator.Create(), input.StudyId, input.ModelVersionId,
+            study.OriginalFileSha256, model.Architecture, model.SemanticVersion, model.PreprocessingVersion,
+            model.WeightSha256, model.InputSize, model.Threshold, requester, input.IdempotencyKey,
+            correlation, Clock.Now);
         study.RecordJobRequest();
         await studies.UpdateAsync(study, autoSave: true, cancellationToken: cancellationToken);
         await jobs.InsertAsync(candidate, autoSave: true, cancellationToken: cancellationToken);
         return Map<SegmentationJob, SegmentationJobDto>(candidate);
-    }
-
-    [Authorize(ResearchPermissions.SegmentationJobs.Execute)]
-    public virtual async Task<SegmentationJobDto> StartAsync(Guid id, ResearchCommandInput input, CancellationToken cancellationToken = default)
-    {
-        var job = await CommandAsync(id, input, cancellationToken);
-        job.Start(Clock.Now);
-        return await SaveAsync(job, cancellationToken);
-    }
-
-    [Authorize(ResearchPermissions.SegmentationJobs.Execute)]
-    public virtual async Task<SegmentationJobDto> ReportProgressAsync(Guid id, ReportJobProgressInput input, CancellationToken cancellationToken = default)
-    {
-        var job = await CommandAsync(id, input, cancellationToken);
-        job.ReportProgress(input.Progress);
-        return await SaveAsync(job, cancellationToken);
-    }
-
-    [Authorize(ResearchPermissions.SegmentationJobs.Execute)]
-    public virtual async Task<SegmentationJobDto> FailAsync(Guid id, FailSegmentationJobInput input, CancellationToken cancellationToken = default)
-    {
-        var job = await CommandAsync(id, input, cancellationToken);
-        job.Fail(input.Reason, Clock.Now);
-        return await SaveAsync(job, cancellationToken);
     }
 
     [Authorize(ResearchPermissions.SegmentationJobs.Cancel)]
@@ -109,23 +88,6 @@ public class SegmentationJobAppService(ISegmentationJobRepository jobs, IBrainSt
         study.RecordJobRequest();
         await studies.UpdateAsync(study, autoSave: true, cancellationToken: cancellationToken);
         return await SaveAsync(job, cancellationToken);
-    }
-
-    [Authorize(ResearchPermissions.SegmentationJobs.Execute)]
-    [UnitOfWork(isTransactional: true)]
-    public virtual async Task<SegmentationResultDto> CompleteAsync(Guid id, CompleteSegmentationJobInput input, CancellationToken cancellationToken = default)
-    {
-        var job = await CommandAsync(id, input, cancellationToken);
-        var result = new SegmentationResult(GuidGenerator.Create(), id, input.MaskObjectKey, input.OverlayObjectKey,
-            input.ContourObjectKey, input.TumorAreaPixels, input.InferenceMilliseconds, input.PreprocessingMilliseconds,
-            input.PostprocessingMilliseconds, Clock.Now, input.Dice, input.IoU, input.Precision, input.Recall);
-        job.Complete(Clock.Now);
-        await artifacts.VerifyAsync(result.MaskObjectKey, null, cancellationToken);
-        await artifacts.VerifyAsync(result.OverlayObjectKey, null, cancellationToken);
-        await artifacts.VerifyAsync(result.ContourObjectKey, null, cancellationToken);
-        await results.InsertAsync(result, autoSave: true, cancellationToken: cancellationToken);
-        await jobs.UpdateAsync(job, autoSave: true, cancellationToken: cancellationToken);
-        return Map<SegmentationResult, SegmentationResultDto>(result);
     }
 
     private async Task<SegmentationJob> CommandAsync(Guid id, ResearchCommandInput input, CancellationToken cancellationToken)

@@ -25,4 +25,8 @@ public static class ResearchErrors
     public const string DefaultModelConflict = "BrainSeg:DefaultModelConflict";
     public const string ResultAlreadyExists = "BrainSeg:ResultAlreadyExists";
     public const string DuplicateExperiment = "BrainSeg:DuplicateExperiment";
+    public const string GroundTruthAlreadyRegistered = "BrainSeg:GroundTruthAlreadyRegistered";
+    public const string GroundTruthNotRegistered = "BrainSeg:GroundTruthNotRegistered";
+    public const string InferenceUnavailable = "BrainSeg:InferenceUnavailable";
+    public const string EvaluationFailed = "BrainSeg:EvaluationFailed";
 }

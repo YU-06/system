@@ -9,6 +9,8 @@ public sealed class BrainStudyDto : FullAuditedEntityDto<Guid>
     public string Modality { get; set; } = string.Empty;
     public string OriginalFileObjectKey { get; set; } = string.Empty;
     public string OriginalFileSha256 { get; set; } = string.Empty;
+    public string? GroundTruthSha256 { get; set; }
+    public bool HasGroundTruth { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
     public int SliceIndex { get; set; }
@@ -21,6 +23,13 @@ public sealed class SegmentationJobDto : FullAuditedEntityDto<Guid>
 {
     public Guid StudyId { get; set; }
     public Guid ModelVersionId { get; set; }
+    public string? InputSha256 { get; set; }
+    public ModelArchitecture? Architecture { get; set; }
+    public string? ModelSemanticVersion { get; set; }
+    public string? PreprocessingVersion { get; set; }
+    public string? WeightSha256 { get; set; }
+    public int? InputSize { get; set; }
+    public double? Threshold { get; set; }
     public Guid RequesterId { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
     public SegmentationJobStatus Status { get; set; }
@@ -29,6 +38,7 @@ public sealed class SegmentationJobDto : FullAuditedEntityDto<Guid>
     public DateTimeOffset RequestedTime { get; set; }
     public DateTimeOffset? StartedTime { get; set; }
     public DateTimeOffset? CompletedTime { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
     public string? ErrorCode { get; set; }
     public string? ErrorMessage { get; set; }
     public int RetryCount { get; set; }
@@ -56,8 +66,12 @@ public sealed class SegmentationResultDto : FullAuditedEntityDto<Guid>
 {
     public Guid JobId { get; set; }
     public string MaskObjectKey { get; set; } = string.Empty;
-    public string OverlayObjectKey { get; set; } = string.Empty;
-    public string ContourObjectKey { get; set; } = string.Empty;
+    public string? MaskSha256 { get; set; }
+    public string? OverlayObjectKey { get; set; }
+    public string? ContourObjectKey { get; set; }
+    public string? RemotePredictionSha256 { get; set; }
+    public string? GroundTruthSha256 { get; set; }
+    public string? EvaluationProtocol { get; set; }
     public double? Dice { get; set; }
     public double? IoU { get; set; }
     public double? Precision { get; set; }

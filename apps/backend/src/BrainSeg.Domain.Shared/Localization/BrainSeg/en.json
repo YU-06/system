@@ -6,15 +6,18 @@
     "Permission:BrainStudies.Create": "Upload studies",
     "Permission:BrainStudies.Update": "Update and archive studies",
     "Permission:BrainStudies.Delete": "Soft-delete studies",
+    "Permission:BrainStudies.RegisterGroundTruth": "Register evaluation ground truth",
+    "Permission:BrainStudies.DeleteGroundTruth": "Delete evaluation ground truth",
     "Permission:SegmentationJobs": "Read segmentation jobs",
     "Permission:SegmentationJobs.Create": "Request segmentation",
-    "Permission:SegmentationJobs.Execute": "Execute jobs and record results",
     "Permission:SegmentationJobs.Cancel": "Cancel jobs",
     "Permission:SegmentationJobs.Retry": "Retry failed jobs",
     "Permission:ModelVersions": "Read model versions",
     "Permission:ModelVersions.Create": "Register model versions",
     "Permission:ModelVersions.Manage": "Activate and select model versions",
     "Permission:SegmentationResults": "Read segmentation results",
+    "Permission:SegmentationResults.Download": "Download segmentation artifacts",
+    "Permission:SegmentationResults.Evaluate": "Register ground truth and evaluate",
     "Permission:ExperimentRuns": "Read experiment records",
     "Permission:ExperimentRuns.Create": "Register experiment records",
     "BrainSeg:InvalidInput": "The input does not satisfy the research protocol.",
@@ -39,6 +42,10 @@
     "BrainSeg:InvalidMetrics": "Metrics must be valid JSON or complete finite values in the allowed range.",
     "BrainSeg:DefaultModelConflict": "The default model changed concurrently. Reload before retrying.",
     "BrainSeg:ResultAlreadyExists": "A result already exists for this job.",
-    "BrainSeg:DuplicateExperiment": "An experiment with the same reproducibility identity already exists."
+    "BrainSeg:DuplicateExperiment": "An experiment with the same reproducibility identity already exists.",
+    "BrainSeg:GroundTruthAlreadyRegistered": "Ground truth is already registered for this study.",
+    "BrainSeg:GroundTruthNotRegistered": "No evaluation ground truth is registered for this study.",
+    "BrainSeg:InferenceUnavailable": "The inference service is currently unavailable.",
+    "BrainSeg:EvaluationFailed": "The evaluation service could not complete this traceable evaluation."
   }
 }

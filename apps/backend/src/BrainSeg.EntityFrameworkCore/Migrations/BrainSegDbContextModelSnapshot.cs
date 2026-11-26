@@ -57,6 +57,14 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasColumnType("text")
                         .HasColumnName("ExtraProperties");
 
+                    b.Property<string>("GroundTruthObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("GroundTruthSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<int>("Height")
                         .HasColumnType("integer");
 
@@ -360,6 +368,12 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                     b.Property<Guid>("Id")
                         .HasColumnType("uuid");
 
+                    b.Property<int?>("Architecture")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid?>("ClaimToken")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTime?>("CompletedTime")
                         .HasColumnType("timestamp with time zone");
 
@@ -409,6 +423,13 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
+                    b.Property<string>("InputSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int?>("InputSize")
+                        .HasColumnType("integer");
+
                     b.Property<bool>("IsDeleted")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("boolean")
@@ -423,8 +444,19 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("LastModifierId");
 
+                    b.Property<DateTime?>("LeaseExpiresAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ModelSemanticVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<Guid>("ModelVersionId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("PreprocessingVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
 
                     b.Property<int>("Progress")
                         .HasColumnType("integer");
@@ -447,6 +479,13 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                     b.Property<Guid>("StudyId")
                         .HasColumnType("uuid");
 
+                    b.Property<double?>("Threshold")
+                        .HasColumnType("double precision");
+
+                    b.Property<string>("WeightSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ModelVersionId");
@@ -454,6 +493,8 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                     b.HasIndex("RequesterId", "IdempotencyKey")
                         .IsUnique()
                         .HasDatabaseName("UX_SegmentationJobs_Idempotency");
+
+                    b.HasIndex("Status", "LeaseExpiresAt");
 
                     b.HasIndex("Status", "RequestedTime");
 
@@ -480,7 +521,6 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasColumnName("ConcurrencyStamp");
 
                     b.Property<string>("ContourObjectKey")
-                        .IsRequired()
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
 
@@ -506,10 +546,18 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                     b.Property<double?>("Dice")
                         .HasColumnType("double precision");
 
+                    b.Property<string>("EvaluationProtocol")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("ExtraProperties")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("ExtraProperties");
+
+                    b.Property<string>("GroundTruthSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<double>("InferenceMilliseconds")
                         .HasColumnType("double precision");
@@ -539,8 +587,11 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
 
+                    b.Property<string>("MaskSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("OverlayObjectKey")
-                        .IsRequired()
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
 
@@ -555,6 +606,14 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
 
                     b.Property<double?>("Recall")
                         .HasColumnType("double precision");
+
+                    b.Property<string>("RemotePredictionObjectKey")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("RemotePredictionSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<int>("TumorAreaPixels")
                         .HasColumnType("integer");
@@ -577,6 +636,44 @@ namespace BrainSeg.EntityFrameworkCore.Migrations
                             t.HasCheckConstraint("CK_SegmentationResults_Metrics", "(\"Dice\" IS NULL OR \"Dice\" BETWEEN 0 AND 1) AND (\"IoU\" IS NULL OR \"IoU\" BETWEEN 0 AND 1) AND (\"Precision\" IS NULL OR \"Precision\" BETWEEN 0 AND 1) AND (\"Recall\" IS NULL OR \"Recall\" BETWEEN 0 AND 1)");
 
                             t.HasCheckConstraint("CK_SegmentationResults_Timings", "\"InferenceMilliseconds\" >= 0 AND \"PreprocessingMilliseconds\" >= 0 AND \"PostprocessingMilliseconds\" >= 0");
+                        });
+                });
+
+            modelBuilder.Entity("BrainSeg.Storage.ObjectWriteIntent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("NextAttemptTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ObjectKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("RequestedTime")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("NextAttemptTime");
+
+                    b.HasIndex("ObjectKey")
+                        .IsUnique()
+                        .HasDatabaseName("UX_ObjectWriteIntents_ObjectKey");
+
+                    b.ToTable("ObjectWriteIntents", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ObjectWriteIntents_AttemptCount", "\"AttemptCount\" >= 0");
                         });
                 });
 

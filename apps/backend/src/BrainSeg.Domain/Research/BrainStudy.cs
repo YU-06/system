@@ -10,6 +10,9 @@ public class BrainStudy : FullAuditedAggregateRoot<Guid>
     public string Modality { get; private set; } = ResearchScope.Modality;
     public string OriginalFileObjectKey { get; private set; } = string.Empty;
     public string OriginalFileSha256 { get; private set; } = string.Empty;
+    public string? GroundTruthObjectKey { get; private set; }
+    public string? GroundTruthSha256 { get; private set; }
+    public bool HasGroundTruth => GroundTruthObjectKey is not null;
     public int Width { get; private set; }
     public int Height { get; private set; }
     public int SliceIndex { get; private set; }
@@ -46,6 +49,25 @@ public class BrainStudy : FullAuditedAggregateRoot<Guid>
     }
 
     public void ChangePseudonym(string pseudonym) => Pseudonym = ResearchGuard.Token(pseudonym, nameof(Pseudonym));
+
+    public void RegisterGroundTruth(string objectKey, string sha256)
+    {
+        EnsureReady();
+        if (GroundTruthObjectKey is not null)
+            throw new BusinessException(ResearchErrors.GroundTruthAlreadyRegistered);
+        GroundTruthObjectKey = ResearchGuard.ObjectKey(objectKey, nameof(GroundTruthObjectKey));
+        GroundTruthSha256 = ResearchGuard.Sha256(sha256, nameof(GroundTruthSha256));
+    }
+
+    public string RemoveGroundTruth()
+    {
+        if (GroundTruthObjectKey is null)
+            throw new BusinessException(ResearchErrors.GroundTruthNotRegistered);
+        var objectKey = GroundTruthObjectKey;
+        GroundTruthObjectKey = null;
+        GroundTruthSha256 = null;
+        return objectKey;
+    }
 
     public void RecordJobRequest()
     {

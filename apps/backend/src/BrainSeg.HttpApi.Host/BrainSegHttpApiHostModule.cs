@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading.RateLimiting;
 using BrainSeg.Hosting;
+using BrainSeg.Inference;
 using BrainSeg.Research;
 using BrainSeg.Storage;
 using BrainSeg.System;
@@ -9,6 +10,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Http.Resilience;
+using Microsoft.Extensions.Options;
 using OpenIddict.Server;
 using OpenIddict.Validation.AspNetCore;
 using Serilog;
@@ -67,6 +70,7 @@ public class BrainSegHttpApiHostModule : AbpModule
         {
             options.ConventionalControllers.Create(typeof(SystemAppService).Assembly);
             options.ConventionalControllers.FormBodyBindingIgnoredTypes.Add(typeof(UploadBrainStudyInput));
+            options.ConventionalControllers.FormBodyBindingIgnoredTypes.Add(typeof(UploadGroundTruthInput));
         });
         Configure<AbpExceptionHandlingOptions>(options => options.SendExceptionsDetailsToClients = false);
         Configure<AbpExceptionHttpStatusCodeOptions>(options =>
@@ -75,12 +79,16 @@ public class BrainSegHttpApiHostModule : AbpModule
                 ResearchErrors.StudyNotReady, ResearchErrors.StudyHasActiveJobs, ResearchErrors.ModelNotReady,
                 ResearchErrors.DuplicateStudy, ResearchErrors.DuplicateModelVersion, ResearchErrors.IdempotencyConflict,
                 ResearchErrors.DefaultModelConflict, ResearchErrors.ResultAlreadyExists, ResearchErrors.DuplicateExperiment,
-                ResearchErrors.RetryLimitReached }) options.Map(code, HttpStatusCode.Conflict);
+                ResearchErrors.RetryLimitReached, ResearchErrors.GroundTruthAlreadyRegistered,
+                ResearchErrors.ArtifactHashMismatch }) options.Map(code, HttpStatusCode.Conflict);
             foreach (var code in new[] { ResearchErrors.InvalidInput, ResearchErrors.InvalidTimestamp,
                 ResearchErrors.InvalidProgress, ResearchErrors.InvalidSorting, ResearchErrors.InvalidFile,
-                ResearchErrors.InvalidMetrics, ResearchErrors.ArtifactHashMismatch }) options.Map(code, HttpStatusCode.BadRequest);
+                ResearchErrors.InvalidMetrics }) options.Map(code, HttpStatusCode.BadRequest);
             options.Map(ResearchErrors.UploadTooLarge, HttpStatusCode.RequestEntityTooLarge);
             options.Map(ResearchErrors.ArtifactUnavailable, HttpStatusCode.NotFound);
+            options.Map(ResearchErrors.GroundTruthNotRegistered, HttpStatusCode.NotFound);
+            options.Map(ResearchErrors.InferenceUnavailable, HttpStatusCode.ServiceUnavailable);
+            options.Map(ResearchErrors.EvaluationFailed, HttpStatusCode.BadGateway);
         });
         Configure<AbpAuditingOptions>(options => options.IsEnabledForAnonymousUsers = false);
         services.AddAuthentication(OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme);
@@ -107,11 +115,33 @@ public class BrainSegHttpApiHostModule : AbpModule
                 ? new MinioObjectStorage(configuration)
                 : new LocalObjectStorage(configuration));
         services.AddTransient<CorrelationIdHandler>();
-        services.AddHttpClient("ml-inference", client =>
+        services.Configure<MlInferenceOptions>(configuration.GetSection(MlInferenceOptions.SectionName));
+        services.AddHttpClient("ml-inference", (provider, client) =>
         {
-            client.BaseAddress = new Uri(configuration["MlInference:BaseUrl"] ?? "http://localhost:8000");
-            client.Timeout = TimeSpan.FromSeconds(5);
-        }).AddHttpMessageHandler<CorrelationIdHandler>();
+            var options = provider.GetRequiredService<IOptions<MlInferenceOptions>>().Value;
+            client.BaseAddress = new Uri(options.BaseUrl);
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        }).AddHttpMessageHandler<CorrelationIdHandler>()
+            .AddStandardResilienceHandler(options =>
+            {
+                var timeout = TimeSpan.FromSeconds(configuration.GetValue("MlInference:RequestTimeoutSeconds", 150));
+                options.Retry.MaxRetryAttempts = 1;
+                options.Retry.DisableForUnsafeHttpMethods();
+                options.AttemptTimeout.Timeout = timeout;
+                options.TotalRequestTimeout.Timeout = TimeSpan.FromTicks(timeout.Ticks * 2);
+                options.CircuitBreaker.SamplingDuration = TimeSpan.FromTicks(timeout.Ticks * 2);
+            });
+        services.AddTransient<IMlInferenceClient>(provider => new MlInferenceClient(
+            provider.GetRequiredService<IHttpClientFactory>().CreateClient("ml-inference"),
+            provider.GetRequiredService<IObjectStorage>(),
+            provider.GetRequiredService<IOptions<MlInferenceOptions>>()));
+        services.AddTransient<IInferenceJobProcessor, InferenceJobProcessor>();
+        services.AddTransient<IObjectWriteIntentManager, ObjectWriteIntentManager>();
+        if (!services.GetHostingEnvironment().IsEnvironment("Testing"))
+        {
+            services.AddHostedService<InferenceJobWorker>();
+            services.AddHostedService<ObjectWriteIntentWorker>();
+        }
         services.AddHealthChecks()
             .AddCheck<PostgreSqlHealthCheck>("postgresql", tags: ["ready"])
             .AddCheck<StorageHealthCheck>("object-storage", tags: ["ready"])
@@ -131,7 +161,7 @@ public class BrainSegHttpApiHostModule : AbpModule
                     }));
         });
         services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
-            options.Limits.MaxRequestBodySize = 64 * 1024 * 1024);
+            options.Limits.MaxRequestBodySize = 64 * 1024 * 1024 + 128 * 1024);
     }
 
     public override void OnApplicationInitialization(ApplicationInitializationContext context)

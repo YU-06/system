@@ -54,7 +54,7 @@ public sealed class StorageTests : IDisposable
         var storage = CreateStorage(2);
         using var input = new MemoryStream(new byte[3]);
         await Assert.ThrowsAsync<ArgumentException>(() => storage.SaveAsync(input));
-        Assert.False(Directory.Exists(rootPath));
+        Assert.Empty(Directory.GetFiles(rootPath));
     }
 
     public void Dispose()

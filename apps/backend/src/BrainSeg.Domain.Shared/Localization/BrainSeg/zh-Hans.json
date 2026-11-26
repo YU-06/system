@@ -6,15 +6,18 @@
     "Permission:BrainStudies.Create": "上传研究影像",
     "Permission:BrainStudies.Update": "修改与归档研究影像",
     "Permission:BrainStudies.Delete": "软删除研究影像",
+    "Permission:BrainStudies.RegisterGroundTruth": "登记评价真值",
+    "Permission:BrainStudies.DeleteGroundTruth": "删除评价真值",
     "Permission:SegmentationJobs": "查看分割任务",
     "Permission:SegmentationJobs.Create": "创建分割任务",
-    "Permission:SegmentationJobs.Execute": "执行任务与记录结果",
     "Permission:SegmentationJobs.Cancel": "取消分割任务",
     "Permission:SegmentationJobs.Retry": "重试失败任务",
     "Permission:ModelVersions": "查看模型版本",
     "Permission:ModelVersions.Create": "登记模型版本",
     "Permission:ModelVersions.Manage": "启停与设置默认模型",
     "Permission:SegmentationResults": "查看分割结果",
+    "Permission:SegmentationResults.Download": "下载分割产物",
+    "Permission:SegmentationResults.Evaluate": "登记并执行评价",
     "Permission:ExperimentRuns": "查看实验记录",
     "Permission:ExperimentRuns.Create": "登记实验记录",
     "BrainSeg:InvalidInput": "输入不符合固定研究协议。",
@@ -39,6 +42,10 @@
     "BrainSeg:InvalidMetrics": "指标必须为合法 JSON，或为范围内完整且有限的指标值。",
     "BrainSeg:DefaultModelConflict": "默认模型已被并发修改，请刷新后重试。",
     "BrainSeg:ResultAlreadyExists": "此任务已经存在分割结果。",
-    "BrainSeg:DuplicateExperiment": "相同可复现标识的实验记录已存在。"
+    "BrainSeg:DuplicateExperiment": "相同可复现标识的实验记录已存在。",
+    "BrainSeg:GroundTruthAlreadyRegistered": "此影像已经登记评价真值。",
+    "BrainSeg:GroundTruthNotRegistered": "此影像尚未登记评价真值。",
+    "BrainSeg:InferenceUnavailable": "推理服务当前不可用。",
+    "BrainSeg:EvaluationFailed": "评价服务无法完成本次可追溯评价。"
   }
 }

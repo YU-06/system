@@ -1,5 +1,7 @@
+import asyncio
 import gzip
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -7,8 +9,9 @@ from typing import Annotated, Any
 
 import nibabel as nib
 import numpy as np
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from training import DISCLAIMER
@@ -41,9 +44,13 @@ class SegmentationResponse(APIModel):
     architecture: str
     artifactKind: str
     preprocessingVersion: str
+    inputSize: int
     threshold: float
     correlationId: str
+    requestId: str
     inputSha256: str
+    weightSha256: str | None
+    modelManifestSha256: str | None
     predictionObjectKey: str
     predictionSha256: str
     maskShape: list[int]
@@ -90,6 +97,9 @@ class EvaluationResponse(APIModel):
     preprocessingVersion: str
     evaluationProtocol: str
     threshold: float
+    weightSha256: str | None
+    modelManifestSha256: str | None
+    requestId: str
     correlationId: str
     inputSha256: str
     groundTruthSha256: str
@@ -200,6 +210,19 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
     runtime = ModelRuntime(settings, predictor)
     storage = LocalObjectStorage(settings.object_storage_path, settings.max_upload_bytes)
     logger = configure_logging()
+    request_lock = asyncio.Lock()
+
+    async def require_service_auth(request: Request) -> None:
+        expected = settings.service_api_key
+        if not expected:
+            raise ServiceError(
+                "SERVICE_AUTH_NOT_CONFIGURED",
+                "Service authentication is not configured.",
+                503,
+            )
+        supplied = request.headers.get("Authorization", "")
+        if not supplied.startswith("Bearer ") or not secrets.compare_digest(supplied[7:], expected):
+            raise ServiceError("SERVICE_AUTH_REQUIRED", "Service authentication is required.", 401)
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -324,7 +347,27 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             correlationId=correlation_id.get(),
         )
 
-    async def segment_volume(volume: VolumeInput) -> SegmentationResponse:
+    async def segment_volume(volume: VolumeInput, request_id: str) -> SegmentationResponse:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+            raise ServiceError("INVALID_REQUEST_ID", "The request identifier is invalid.")
+        async with request_lock:
+            saved_response = storage.read_request_response(request_id, volume.sha256)
+            if saved_response is not None:
+                return SegmentationResponse.model_validate(saved_response)
+            saved_response = storage.read_prediction_response(request_id, volume.sha256)
+            if saved_response is not None:
+                replay = SegmentationResponse.model_validate(saved_response)
+                storage.save_request_response(
+                    request_id,
+                    volume.sha256,
+                    replay.predictionObjectKey,
+                    replay.predictionSha256,
+                    replay.model_dump(mode="json"),
+                )
+                return replay
+            return await _segment_volume(volume, request_id)
+
+    async def _segment_volume(volume: VolumeInput, request_id: str) -> SegmentationResponse:
         model_version = runtime.model_version
         architecture = runtime.architecture
         artifact_kind = runtime.artifact_kind
@@ -371,6 +414,7 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             "modelManifestSha256": runtime.manifest_sha256,
             "modelWeightSha256": manifest.weight_sha256 if manifest else None,
             "correlationId": correlation_id.get(),
+            "requestId": request_id,
         }
         try:
             artifact = storage.put_prediction(payload, artifact_metadata)
@@ -382,14 +426,18 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             ) from error
         completed = time.perf_counter()
         area = int(np.count_nonzero(reconstructed))
-        return SegmentationResponse(
+        response = SegmentationResponse(
             modelVersion=model_version,
             architecture=architecture,
             artifactKind=artifact_kind,
             preprocessingVersion=preprocessing_version,
+            inputSize=256,
             threshold=threshold,
             correlationId=correlation_id.get(),
+            requestId=request_id,
             inputSha256=volume.sha256,
+            weightSha256=manifest.weight_sha256 if manifest else None,
+            modelManifestSha256=runtime.manifest_sha256,
             predictionObjectKey=artifact.object_key,
             predictionSha256=artifact.sha256,
             maskShape=list(reconstructed.shape),
@@ -401,6 +449,15 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
                 postprocessingMilliseconds=(completed - inferred) * 1000,
             ),
         )
+        storage.save_prediction_response(artifact.object_key, response.model_dump(mode="json"))
+        storage.save_request_response(
+            request_id,
+            volume.sha256,
+            artifact.object_key,
+            artifact.sha256,
+            response.model_dump(mode="json"),
+        )
+        return response
 
     @application.post(
         "/v1/segment",
@@ -408,11 +465,27 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
         responses=ERROR_RESPONSES,
         tags=["Segmentation"],
     )
-    async def segment(file: Annotated[UploadFile, File()]) -> SegmentationResponse:
-        if not runtime.ready:
-            raise ServiceError("MODEL_NOT_READY", "No verified model is available.", 503)
+    async def segment(
+        file: Annotated[UploadFile, File()],
+        request_id: Annotated[str | None, Form(alias="requestId")] = None,
+        _: None = Depends(require_service_auth),
+    ) -> SegmentationResponse:
         volume = await read_volume(file, settings)
-        return await segment_volume(volume)
+        return await segment_volume(volume, request_id or uuid.uuid4().hex)
+
+    @application.get(
+        "/v1/predictions/{prediction_object_key}",
+        responses=ERROR_RESPONSES,
+        tags=["Segmentation"],
+        dependencies=[Depends(require_service_auth)],
+    )
+    async def download_prediction(prediction_object_key: str) -> Response:
+        payload, _, digest = storage.read_prediction(prediction_object_key)
+        return Response(
+            content=payload,
+            media_type="application/gzip",
+            headers={"X-Prediction-Sha256": digest},
+        )
 
     @application.post(
         "/v1/evaluate",
@@ -427,6 +500,7 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
         label: Annotated[UploadFile, File()],
         prediction_object_key: Annotated[str, Form(alias="predictionObjectKey")],
         evaluation_protocol: Annotated[str, Form(alias="evaluationProtocol")] = EVALUATION_PROTOCOL,
+        _: None = Depends(require_service_auth),
     ) -> EvaluationResponse:
         if evaluation_protocol != EVALUATION_PROTOCOL:
             raise ServiceError(
@@ -478,6 +552,9 @@ def create_app(settings: Settings | None = None, predictor: Predictor | None = N
             preprocessingVersion=str(artifact_metadata["preprocessingVersion"]),
             evaluationProtocol=EVALUATION_PROTOCOL,
             threshold=float(artifact_metadata["threshold"]),
+            weightSha256=artifact_metadata.get("modelWeightSha256"),
+            modelManifestSha256=artifact_metadata.get("modelManifestSha256"),
+            requestId=str(artifact_metadata["requestId"]),
             correlationId=correlation_id.get(),
             inputSha256=source.sha256,
             groundTruthSha256=truth.sha256,

@@ -9,6 +9,13 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
 
     public Guid StudyId { get; private set; }
     public Guid ModelVersionId { get; private set; }
+    public string? InputSha256 { get; private set; }
+    public ModelArchitecture? Architecture { get; private set; }
+    public string? ModelSemanticVersion { get; private set; }
+    public string? PreprocessingVersion { get; private set; }
+    public string? WeightSha256 { get; private set; }
+    public int? InputSize { get; private set; }
+    public double? Threshold { get; private set; }
     public Guid RequesterId { get; private set; }
     public string IdempotencyKey { get; private set; } = string.Empty;
     public SegmentationJobStatus Status { get; private set; }
@@ -17,18 +24,32 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
     public DateTime RequestedTime { get; private set; }
     public DateTime? StartedTime { get; private set; }
     public DateTime? CompletedTime { get; private set; }
+    public DateTime? LeaseExpiresAt { get; private set; }
+    public Guid? ClaimToken { get; private set; }
     public string? ErrorCode { get; private set; }
     public string? ErrorMessage { get; private set; }
     public int RetryCount { get; private set; }
 
     protected SegmentationJob() { }
 
-    public SegmentationJob(Guid id, Guid studyId, Guid modelVersionId, Guid requesterId,
-        string idempotencyKey, string correlationId, DateTime requestedTime) : base(id)
+    public SegmentationJob(Guid id, Guid studyId, Guid modelVersionId, string inputSha256,
+        ModelArchitecture architecture, string modelSemanticVersion, string preprocessingVersion,
+        string weightSha256, int inputSize, double threshold, Guid requesterId, string idempotencyKey,
+        string correlationId, DateTime requestedTime) : base(id)
     {
         ResearchGuard.Identifier(id, nameof(Id));
         StudyId = ResearchGuard.Identifier(studyId, nameof(StudyId));
         ModelVersionId = ResearchGuard.Identifier(modelVersionId, nameof(ModelVersionId));
+        InputSha256 = ResearchGuard.Sha256(inputSha256, nameof(InputSha256));
+        if (!Enum.IsDefined(architecture) || inputSize != 256 || !double.IsFinite(threshold)
+            || threshold is <= 0 or >= 1)
+            throw new BusinessException(ResearchErrors.InvalidInput);
+        Architecture = architecture;
+        ModelSemanticVersion = ResearchGuard.Version(modelSemanticVersion);
+        PreprocessingVersion = ResearchGuard.Token(preprocessingVersion, nameof(PreprocessingVersion), 32);
+        WeightSha256 = ResearchGuard.Sha256(weightSha256, nameof(WeightSha256));
+        InputSize = inputSize;
+        Threshold = threshold;
         RequesterId = ResearchGuard.Identifier(requesterId, nameof(RequesterId));
         IdempotencyKey = ResearchGuard.Token(idempotencyKey, nameof(IdempotencyKey), 128);
         CorrelationId = ResearchGuard.Token(correlationId, nameof(CorrelationId));
@@ -37,11 +58,19 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
     }
 
     public void Start(DateTime now)
+        => Start(now, ResearchGuard.Utc(now).AddMinutes(5), Guid.NewGuid());
+
+    public void Start(DateTime now, DateTime leaseExpiresAt, Guid claimToken)
     {
         RequireStatus(SegmentationJobStatus.Pending);
         StartedTime = ResearchGuard.Utc(now, RequestedTime);
+        LeaseExpiresAt = ResearchGuard.Utc(leaseExpiresAt, StartedTime);
+        ClaimToken = ResearchGuard.Identifier(claimToken, nameof(ClaimToken));
         Status = SegmentationJobStatus.Running;
     }
+
+    public bool IsClaimedBy(Guid claimToken) =>
+        Status == SegmentationJobStatus.Running && ClaimToken == claimToken;
 
     public void ReportProgress(int progress)
     {
@@ -57,6 +86,8 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
     {
         RequireStatus(SegmentationJobStatus.Running);
         CompletedTime = ResearchGuard.Utc(now, StartedTime);
+        LeaseExpiresAt = null;
+        ClaimToken = null;
         Progress = 100;
         Status = SegmentationJobStatus.Succeeded;
     }
@@ -69,6 +100,8 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
             throw new BusinessException(ResearchErrors.InvalidInput).WithData("Field", nameof(reason));
         }
         CompletedTime = ResearchGuard.Utc(now, StartedTime);
+        LeaseExpiresAt = null;
+        ClaimToken = null;
         (ErrorCode, ErrorMessage) = reason switch
         {
             JobFailureReason.InferenceTimeout => (ResearchErrors.InferenceTimeout, "Inference deadline exceeded."),
@@ -86,6 +119,8 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
             throw new BusinessException(ResearchErrors.IllegalJobTransition);
         }
         CompletedTime = ResearchGuard.Utc(now, StartedTime ?? RequestedTime);
+        LeaseExpiresAt = null;
+        ClaimToken = null;
         Status = SegmentationJobStatus.Cancelled;
     }
 
@@ -100,6 +135,8 @@ public class SegmentationJob : FullAuditedAggregateRoot<Guid>
         RetryCount++;
         Progress = 0;
         StartedTime = null;
+        LeaseExpiresAt = null;
+        ClaimToken = null;
         CompletedTime = null;
         ErrorCode = null;
         ErrorMessage = null;

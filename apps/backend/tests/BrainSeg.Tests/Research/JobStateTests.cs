@@ -9,7 +9,8 @@ public class JobStateTests
     private static readonly DateTime Requested = new(2026, 11, 6, 0, 0, 0, DateTimeKind.Utc);
 
     internal static SegmentationJob CreateJob() => new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
-        Guid.NewGuid(), "request-001", "correlation-001", Requested);
+        AggregateTests.Hash, ModelArchitecture.UNet, "1.0.0", "flair-v1", AggregateTests.Hash,
+        256, 0.5, Guid.NewGuid(), "request-001", "correlation-001", Requested);
 
     [Fact]
     public void Successful_job_has_monotonic_progress_and_utc_timestamps()
@@ -120,6 +121,7 @@ public class JobStateTests
             Assert.Throws<BusinessException>(() => job.Start(Requested.AddSeconds(-1))).Code);
         Assert.Throws<BusinessException>(() => job.Start(DateTime.SpecifyKind(Requested, DateTimeKind.Unspecified)));
         Assert.Throws<BusinessException>(() => new SegmentationJob(Guid.NewGuid(), Guid.NewGuid(),
-            Guid.NewGuid(), Guid.NewGuid(), "key", "unsafe id", Requested));
+            Guid.NewGuid(), AggregateTests.Hash, ModelArchitecture.UNet, "1.0.0", "flair-v1",
+            AggregateTests.Hash, 256, 0.5, Guid.NewGuid(), "key", "unsafe id", Requested));
     }
 }

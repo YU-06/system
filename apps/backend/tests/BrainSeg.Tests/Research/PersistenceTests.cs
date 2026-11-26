@@ -103,8 +103,10 @@ internal static class ResearchDatabaseAssertions
         var model = AggregateTests.Model();
         model.Activate(AggregateTests.Now);
         if (scenario == "default-model") model.MakeDefault();
-        var job = new SegmentationJob(Guid.NewGuid(), study.Id, model.Id, ResearchFactory.UserId,
-            "same-key", "database-check", AggregateTests.Now);
+        var job = new SegmentationJob(Guid.NewGuid(), study.Id, model.Id, study.OriginalFileSha256,
+            model.Architecture, model.SemanticVersion, model.PreprocessingVersion, model.WeightSha256,
+            model.InputSize, model.Threshold, ResearchFactory.UserId, "same-key", "database-check",
+            AggregateTests.Now);
         if (scenario == "result-job")
         {
             job.Start(AggregateTests.Now);
@@ -126,10 +128,15 @@ internal static class ResearchDatabaseAssertions
                 "file-slice" => new BrainStudy(Guid.NewGuid(), "other-study", "case-002", AggregateTests.ObjectKey(), AggregateTests.Hash, 240, 240, 0),
                 "model-identity" => AggregateTests.Model("BASELINE"),
                 "default-model" => DefaultModel(),
-                "idempotency" => new SegmentationJob(Guid.NewGuid(), study.Id, model.Id, ResearchFactory.UserId, "same-key", "database-check-2", AggregateTests.Now),
+                "idempotency" => new SegmentationJob(Guid.NewGuid(), study.Id, model.Id, study.OriginalFileSha256,
+                    model.Architecture, model.SemanticVersion, model.PreprocessingVersion, model.WeightSha256,
+                    model.InputSize, model.Threshold, ResearchFactory.UserId, "same-key", "database-check-2", AggregateTests.Now),
                 "result-job" => Result(job.Id),
                 "experiment" => Experiment(model.Id),
-                _ => new SegmentationJob(Guid.NewGuid(), Guid.NewGuid(), model.Id, ResearchFactory.UserId, "missing-parent", "foreign-key-check", AggregateTests.Now)
+                _ => new SegmentationJob(Guid.NewGuid(), Guid.NewGuid(), model.Id, AggregateTests.Hash,
+                    model.Architecture, model.SemanticVersion, model.PreprocessingVersion, model.WeightSha256,
+                    model.InputSize, model.Threshold, ResearchFactory.UserId, "missing-parent",
+                    "foreign-key-check", AggregateTests.Now)
             };
             database.Add(duplicate);
             await database.SaveChangesAsync();
@@ -172,8 +179,8 @@ internal static class ResearchDatabaseAssertions
         return model;
     }
 
-    private static SegmentationResult Result(Guid jobId) => new(Guid.NewGuid(), jobId, AggregateTests.ObjectKey(),
-        AggregateTests.ObjectKey(), AggregateTests.ObjectKey(), 0, 0, 0, 0, AggregateTests.Now);
+    private static SegmentationResult Result(Guid jobId) => new(Guid.NewGuid(), jobId,
+        AggregateTests.ObjectKey(), AggregateTests.Hash, null, null, 0, 0, 0, 0, 0, AggregateTests.Now);
 
     private static ExperimentRun Experiment(Guid modelId) => new(Guid.NewGuid(), "repro-fixture", AggregateTests.Hash,
         new string('b', 40), AggregateTests.Hash, 42, modelId, "{\"status\":\"NotRun\"}", AggregateTests.ObjectKey(), AggregateTests.Now);

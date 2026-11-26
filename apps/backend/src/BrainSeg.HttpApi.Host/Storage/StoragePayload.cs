@@ -14,27 +14,38 @@ internal static class StoragePayload
         return objectKey;
     }
 
-    public static async Task<(byte[] Bytes, StoredObject Object)> ReadAsync(
-        Stream content, long maxBytes, CancellationToken cancellationToken)
+    public static async Task<(string TemporaryPath, StoredObject Object)> CopyToTemporaryFileAsync(
+        Stream content, string temporaryDirectory, string objectKey, long maxBytes,
+        CancellationToken cancellationToken)
     {
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        while (true)
+        ValidateKey(objectKey);
+        Directory.CreateDirectory(temporaryDirectory);
+        var temporaryPath = Path.Combine(temporaryDirectory, $".pending-{Guid.NewGuid():N}.tmp");
+        try
         {
-            var count = await content.ReadAsync(chunk, cancellationToken);
-            if (count == 0)
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            await using var target = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            var chunk = new byte[81920];
+            long size = 0;
+            while (true)
             {
-                break;
+                var count = await content.ReadAsync(chunk, cancellationToken);
+                if (count == 0) break;
+                size += count;
+                if (size > maxBytes)
+                    throw new ArgumentException("Object exceeds the configured size limit.", nameof(content));
+                hash.AppendData(chunk, 0, count);
+                await target.WriteAsync(chunk.AsMemory(0, count), cancellationToken);
             }
-            if (buffer.Length + count > maxBytes)
-            {
-                throw new ArgumentException("Object exceeds the configured size limit.", nameof(content));
-            }
-            await buffer.WriteAsync(chunk.AsMemory(0, count), cancellationToken);
+            await target.FlushAsync(cancellationToken);
+            return (temporaryPath, new StoredObject(objectKey,
+                Convert.ToHexStringLower(hash.GetHashAndReset()), size));
         }
-        var bytes = buffer.ToArray();
-        var storedObject = new StoredObject($"{Guid.NewGuid():N}.bin",
-            Convert.ToHexStringLower(SHA256.HashData(bytes)), bytes.LongLength);
-        return (bytes, storedObject);
+        catch
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            throw;
+        }
     }
 }

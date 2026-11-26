@@ -11,10 +11,23 @@ def initialize_environment(root: Path) -> Path:
     descriptor = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
         stream.write(template)
-    for key in ("POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD"):
+    for key in ("POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD", "ML_SERVICE_API_KEY"):
         set_key(str(destination), key, secrets.token_hex(32), quote_mode="never")
+    set_key(
+        str(destination),
+        "MlInference__ApiKey",
+        dotenv_value(destination, "ML_SERVICE_API_KEY"),
+        quote_mode="never",
+    )
     destination.chmod(0o600)
     return destination
+
+
+def dotenv_value(path: Path, key: str) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1]
+    raise ValueError(f"{key} is missing from the generated environment file.")
 
 
 def main() -> None:

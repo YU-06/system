@@ -1,0 +1,295 @@
+<section class="feature-page" aria-labelledby="study-title">
+  <header class="feature-heading">
+    <div>
+      <p class="eyebrow">{{ text.studyEyebrow }}</p>
+      <h1 id="study-title">{{ text.studiesTitle }}</h1>
+      <p class="muted">{{ text.studyIntro }}</p>
+    </div>
+  </header>
+
+  @if (canUpload$ | async) {
+    <section class="panel" aria-labelledby="upload-title">
+      <h2 id="upload-title">{{ text.uploadStudy }}</h2>
+      <p class="muted">{{ text.uploadResearchOnly }}</p>
+      <p class="warning-note">{{ text.noPersonalIdentifiers }}</p>
+      @if (store.modelError()) {
+        <p class="warning-note" role="status">{{ text.modelsUnavailable }}</p>
+      }
+      <form [formGroup]="uploadForm" (ngSubmit)="submitUpload()">
+        <div class="form-grid">
+          <label>
+            <span>{{ text.studyNumber }}</span>
+            <input
+              formControlName="studyNumber"
+              autocomplete="off"
+              [attr.aria-invalid]="
+                uploadForm.controls.studyNumber.invalid && uploadForm.controls.studyNumber.touched
+              "
+            />
+          </label>
+          <label>
+            <span>{{ text.pseudonym }}</span>
+            <input
+              formControlName="pseudonym"
+              autocomplete="off"
+              [attr.aria-invalid]="
+                uploadForm.controls.pseudonym.invalid && uploadForm.controls.pseudonym.touched
+              "
+            />
+          </label>
+          <label>
+            <span>{{ text.sliceIndex }}</span>
+            <input
+              formControlName="sliceIndex"
+              type="number"
+              min="0"
+              max="511"
+              [attr.aria-invalid]="
+                uploadForm.controls.sliceIndex.invalid && uploadForm.controls.sliceIndex.touched
+              "
+            />
+          </label>
+        </div>
+        <button
+          class="drop-zone"
+          type="button"
+          [disabled]="inspecting() || store.uploadState().kind === 'uploading'"
+          (click)="filePicker.click()"
+          (dragover)="preventDrop($event)"
+          (drop)="onDrop($event)"
+        >
+          <span>{{ text.dropNifti }}</span>
+          <small>{{ text.niftiLimit }}</small>
+        </button>
+        <input
+          #filePicker
+          class="visually-hidden"
+          type="file"
+          accept=".nii,.nii.gz"
+          tabindex="-1"
+          [attr.aria-label]="text.chooseNifti"
+          (change)="selectFile(filePicker.files?.item(0) ?? undefined)"
+        />
+        @if (inspecting()) {
+          <p role="status">{{ text.validatingFile }}</p>
+        }
+        @if (selectedFile(); as file) {
+          <dl class="file-details">
+            <div>
+              <dt>{{ text.fileName }}</dt>
+              <dd>{{ file.name }}</dd>
+            </div>
+            <div>
+              <dt>{{ text.fileType }}</dt>
+              <dd>{{ file.type || text.unknownMime }}</dd>
+            </div>
+            <div>
+              <dt>{{ text.fileSize }}</dt>
+              <dd>{{ file.size | number }} {{ text.bytesUnit }}</dd>
+            </div>
+          </dl>
+        }
+        @if (inspected(); as scan) {
+          <p class="success-note" role="status">
+            {{ text.localFileValidated }} · {{ scan.volume.width }} × {{ scan.volume.height }} ×
+            {{ scan.volume.depth }} · SHA-256 <code>{{ scan.sha256 }}</code>
+          </p>
+        }
+        @if (inspectionError(); as errorKey) {
+          <p class="error-note" role="alert">{{ errorKey }}</p>
+        }
+        @if (store.uploadState(); as upload) {
+          @if (upload.kind === 'uploading') {
+            <label class="progress-label">
+              <span>{{ text.uploading }}</span>
+              <progress max="100" [attr.value]="upload.percent"></progress>
+              <span>{{
+                upload.percent === null ? text.uploadProgressUnknown : upload.percent + '%'
+              }}</span>
+            </label>
+          } @else if (upload.kind === 'success') {
+            <p
+              class="success-note"
+              [class.error-note]="!upload.clientHashMatches"
+              [attr.role]="upload.clientHashMatches ? 'status' : 'alert'"
+            >
+              {{ text.uploadSuccess }} · {{ text.serverSha256 }}
+              <code>{{ upload.study.originalFileSha256 }}</code>
+              ·
+              {{ upload.clientHashMatches ? text.hashMatches : text.hashMismatch }}
+            </p>
+            @if (upload.clientHashMatches) {
+              <div class="form-grid inline-action">
+                <label>
+                  <span>{{ text.modelVersion }}</span>
+                  <select (change)="selectModel($event)">
+                    <option value="">{{ text.chooseModel }}</option>
+                    @for (model of store.models(); track model.id) {
+                      <option [value]="model.id">
+                        {{ model.name }} · {{ model.semanticVersion }} ·
+                        {{ architectureLabel(model.architecture) }}
+                      </option>
+                    }
+                  </select>
+                </label>
+                @if (canCreateJob$ | async) {
+                  <button
+                    class="primary-button"
+                    type="button"
+                    [disabled]="!selectedModelId()"
+                    (click)="createJob(upload.study.id!)"
+                  >
+                    {{ text.createSegmentationJob }}
+                  </button>
+                }
+              </div>
+            }
+          } @else if (upload.kind === 'error') {
+            <p class="error-note" role="alert">
+              {{ text.requestFailed }}
+              @if (upload.correlationId) {
+                <code>{{ upload.correlationId }}</code>
+              }
+            </p>
+          }
+        }
+        @if (jobError()) {
+          <p class="error-note" role="alert">
+            {{ text.requestFailed }}
+            @if (jobError() !== 'request') {
+              <code>{{ jobError() }}</code>
+            }
+          </p>
+        }
+        @if (uploadForm.invalid && uploadForm.touched) {
+          <p class="error-note" role="alert">{{ text.requiredStudyFields }}</p>
+        }
+        @if (uploadForm.controls.sliceIndex.hasError('sliceOutsideVolume')) {
+          <p class="error-note" role="alert">{{ text.sliceOutsideVolume }}</p>
+        }
+        <button
+          class="primary-button"
+          type="submit"
+          [disabled]="!inspected() || inspecting() || store.uploadState().kind === 'uploading'"
+        >
+          {{ text.uploadStudy }}
+        </button>
+      </form>
+    </section>
+  }
+
+  <section class="panel" aria-labelledby="study-list-title">
+    <div class="panel-heading">
+      <h2 id="study-list-title">{{ text.registeredStudies }}</h2>
+      <form class="filter-form" (submit)="$event.preventDefault(); filterStudies()">
+        <label>
+          <span>{{ text.filterStudies }}</span>
+          <input [formControl]="filter" />
+        </label>
+        <button type="submit" class="secondary-button">{{ text.filter }}</button>
+      </form>
+    </div>
+    @let state = store.state();
+    @switch (state.kind) {
+      @case ('loading') {
+        <p class="state-message" role="status">{{ text.loading }}</p>
+      }
+      @case ('error') {
+        <p class="error-note" role="alert">
+          {{ text.requestFailed }}
+          @if (state.correlationId) {
+            <code>{{ state.correlationId }}</code>
+          }
+        </p>
+        <button class="secondary-button" type="button" (click)="filterStudies()">
+          {{ text.retryLoad }}
+        </button>
+      }
+      @case ('empty') {
+        <p class="state-message" role="status">{{ text.noStudies }}</p>
+      }
+      @case ('success') {
+        <div class="table-wrap">
+          <table>
+            <caption>
+              {{
+                text.studyTableCaption
+              }}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">{{ text.studyNumber }}</th>
+                <th scope="col">{{ text.pseudonym }}</th>
+                <th scope="col">{{ text.dimensions }}</th>
+                <th scope="col">{{ text.fileHash }}</th>
+                <th scope="col">{{ text.studyStatus }}</th>
+                <th scope="col">{{ text.groundTruth }}</th>
+                <th scope="col">{{ text.actions }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (study of state.studies; track study.id) {
+                <tr>
+                  <td>{{ study.studyNumber }}</td>
+                  <td>{{ study.pseudonym }}</td>
+                  <td>{{ study.width }} × {{ study.height }}{{ localDepth(study.id) }}</td>
+                  <td>
+                    <code>{{ study.originalFileSha256 }}</code>
+                  </td>
+                  <td>{{ studyStatusLabel(study.status) }}</td>
+                  <td>
+                    {{ study.hasGroundTruth ? text.groundTruthRegistered : text.noGroundTruth }}
+                  </td>
+                  <td class="action-cell">
+                    @if (canRegisterGroundTruth$ | async; as canRegister) {
+                      @if (canRegister && !study.hasGroundTruth) {
+                        <label class="file-action">
+                          {{ text.registerGroundTruth }}
+                          <input
+                            type="file"
+                            accept=".nii,.nii.gz"
+                            [attr.aria-label]="text.registerGroundTruthFor + ' ' + study.pseudonym"
+                            [disabled]="store.groundTruthBusyId() === study.id"
+                            (change)="registerGroundTruth(study, $event)"
+                          />
+                        </label>
+                      }
+                    }
+                    @if (store.groundTruthBusyId() === study.id) {
+                      <span role="status">{{ text.uploading }}</span>
+                    }
+                    @if (store.groundTruthErrorId() === study.id) {
+                      <span class="error-note" role="alert">{{
+                        text.groundTruthValidationFailed
+                      }}</span>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">{{ text.studyCount }}: {{ state.totalCount }}</p>
+        <div class="pagination" [attr.aria-label]="text.pagination">
+          <button
+            class="secondary-button"
+            type="button"
+            [disabled]="store.pageIndex() === 0"
+            (click)="changePage(-1)"
+          >
+            {{ text.previousPage }}
+          </button>
+          <span>{{ text.pageNumber }} {{ store.pageIndex() + 1 }}</span>
+          <button
+            class="secondary-button"
+            type="button"
+            [disabled]="(store.pageIndex() + 1) * 20 >= state.totalCount"
+            (click)="changePage(1)"
+          >
+            {{ text.nextPage }}
+          </button>
+        </div>
+      }
+    }
+  </section>
+</section>

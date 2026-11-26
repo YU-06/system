@@ -1,2 +1,4 @@
+import * as Research from './research';
 import * as System from './system';
-export { System };
+import * as Volo from './volo';
+export { Research, System, Volo };

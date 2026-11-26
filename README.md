@@ -6,6 +6,8 @@
 
 当前已实现 BrainStudy、SegmentationJob、ModelVersion、SegmentationResult、ExperimentRun 的领域/应用/持久化功能，并将完整 NIfTI 上传、幂等 Job 创建、数据库轮询后台推理、模型/权重快照、结果哈希登记、授权下载及独立 GT 评价串联起来。后台处理通过数据库 Pending 队列、ClaimToken/租约认领及对象写入补偿支持进程恢复；完整 Worker + FastAPI + PostgreSQL/MinIO 故障恢复联调仍需按[阶段六测试报告](docs/test-reports/0006-abp-inference-background-jobs.md)完成。没有真实训练权重、完整训练实验或正式测试结果，所有真实研究指标仍为 `NotRun`。
 
+阶段七已实现 Angular 科研工作台：病例/任务/结果/模型/实验页面使用 ABP 生成代理、权限受控路由、中文本地化与科研用途免责声明；逐层查看器仅在空间网格匹配时叠加掩膜，没有 GT 时不显示准确性指标。原始影像只保存在浏览器内存（上限 192 MiB），刷新或逐出后需重新上传。具体边界与验证见[阶段七 ADR](docs/adr/0006-angular-research-ui.md)和[阶段七测试报告](docs/test-reports/0007-angular-ui.md)。阶段七 E2E 使用合成影像与 HTTP fixtures，不是实际模型推理或真实服务联调。
+
 初始化时仓库仅包含 Git 元数据与 Copilot 约定，未找到独立审计报告。本次以现有约定和实际构建/测试结果为依据，不声称存在未提供的审计结论。
 
 ## 工程与版本

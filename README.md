@@ -12,6 +12,8 @@
 
 ## 工程与版本
 
+阶段九部署与研究复现入口：[从零启动、配置/权限边界、升级回滚](docs/deployment.md)、[研究复现与论文证据索引](docs/reproducibility.md)、[API/OpenAPI 索引](docs/api/README.md)、[系统/部署/时序/ER 图索引](docs/diagrams.md)、[ADR 索引](docs/adr/README.md)。阶段九本地 Docker/数据/模型阻塞与实际运行记录见[阶段九测试报告](docs/test-reports/0009-deployment-documentation.md)。
+
 | 部分 | 版本与位置 |
 | --- | --- |
 | 后端 | .NET SDK 10.0.400、ABP 10.7.1，`apps/backend`，七层模块化单体 |
@@ -60,12 +62,10 @@ docker compose up --build --wait --wait-timeout 240
 | http://localhost:5000/swagger | 后端 OpenAPI |
 | http://localhost:5000/health | 后端存活，不依赖外部服务 |
 | http://localhost:5000/ready | 数据库、对象存储、推理进程连接检查 |
-| http://localhost:8000/docs | 推理服务 OpenAPI |
-| http://localhost:8000/health | 推理进程存活，可在无模型时成功 |
-| http://localhost:8000/ready | 模型完整性与加载就绪；无模型时 **503 是预期结果** |
+| `ml-inference:8000` | FastAPI OpenAPI `/docs`、存活 `/health`、模型就绪 `/ready`；基础 Compose 不映射宿主端口，仅 `backend-internal` 可访问 |
 | http://localhost:9001 | MinIO 控制台，账号来自本地 `.env` |
 
-所有对外端口仅绑定 `127.0.0.1`。端口冲突时修改 `.env` 中对应的端口；本地前后端分开运行时同步调整 `BACKEND_DEV_URL` 与 `App__CorsOrigins`。
+Web、后端和 MinIO 的本机端口仅绑定 `127.0.0.1`；PostgreSQL 5432 和推理 8000 在基础 Compose 中没有宿主机端口映射。仅需宿主机应用调试时，显式叠加 `compose.dev.yaml`，其数据库/推理端口仍只绑定 loopback。端口冲突时修改 `.env` 的对应端口；本地前后端分开运行时同步调整 `BACKEND_DEV_URL` 与 `App__CorsOrigins`。Compose 网络/资源、HTTPS、限流与数据卷规则见[部署手册](docs/deployment.md)。
 
 ```powershell
 docker compose ps
@@ -77,7 +77,7 @@ docker compose down
 
 ## 不使用容器运行应用
 
-除 uv 外，安装上述精确版本的 .NET SDK 与 Node，并先准备 PostgreSQL；可仅用 `docker compose up -d postgres object-storage` 启动依赖。各应用从同一个根 `.env` 读取配置，前端只在开发代理/生成代理脚本中使用后端地址，不将私有环境变量打入浏览器包。
+除 uv 外，安装上述精确版本的 .NET SDK 与 Node，并先准备 PostgreSQL；可用 `docker compose -f compose.yaml -f compose.dev.yaml up -d postgres object-storage ml-inference` 启动本机调试依赖。各应用从同一个根 `.env` 读取配置，前端只在开发代理/生成代理脚本中使用后端地址，不将私有环境变量打入浏览器包。
 
 后端，根目录 PowerShell：
 
@@ -107,7 +107,7 @@ npm start
 
 ## 推理与训练协议
 
-推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。数据接口要求 Compose 生成的 Bearer 服务密钥；未配置密钥时推理、评价与预测下载 fail-closed。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。
+推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。数据接口要求 Compose 生成的 Bearer 服务密钥；未配置密钥时推理、评价与预测下载 fail-closed。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。推理 OpenAPI 为 FastAPI `/openapi.json`，在 Compose 内部读取方式见 [API 索引](docs/api/README.md)；服务不默认发布至宿主机。
 
 推理服务仅在部署提供经验证的研究 ONNX 权重和版本化 YAML 清单后才会就绪。把两者放在被忽略的 `artifacts/models`，令 `weightFile` 使用同目录文件名，并在清单中登记实际 SHA-256、模型版本、架构、`flair-v1`、256 输入尺寸、验证集冻结阈值及 `artifactKind: research`。在 `.env` 中设置 `ML_MODEL_MANIFEST_PATH=/models/model-manifest.yaml`，然后重建推理容器。仓库中的 [`model-manifest.example.yaml`](services/ml-inference/model-manifest.example.yaml) 明确标为合成测试产物，不能用于启用研究模型：
 
@@ -167,4 +167,4 @@ CI 分别执行 .NET restore/build/format/test、npm ci/format/lint/test/build/E
 
 ABP/Serilog、FastAPI、Nginx 输出 JSON 日志，统一使用 `CorrelationId` 字段与 `X-Correlation-Id` 请求头。后端与反向代理验证外部 ID，只接受 1–64 位 ASCII 字母、数字、`-`、`_`，否则重新生成；命名 ML HTTP 客户端传播 ID，Python 在日志、响应头和响应体中保持一致。不记录 MRI 内容、令牌、患者真实身份或请求体。
 
-这是本地演示配置，不是生产部署：没有 TLS 终止、永久 OpenIddict 证书、生产 IAM、备份恢复或高可用；部署到非本机环境之前必须补齐这些控制并扫描镜像。非开发环境后端要求显式证书，不回退到开发证书。MinIO 社区源码的许可证和维护状态需要在正式部署前单独评估。
+这是本地演示配置，不是生产部署：没有 TLS 终止、永久 OpenIddict 证书、生产 IAM、初始管理员/OpenIddict 客户端 bootstrap、备份恢复演练或高可用；部署到非本机环境之前必须补齐这些控制并扫描、固定镜像 digest。非开发环境后端要求显式证书，不回退到开发证书。MinIO 社区源码的许可证和维护状态需要在正式部署前单独评估。阶段九 [部署手册](docs/deployment.md) 与[科研复现手册](docs/reproducibility.md)区分了方案、实测和未完成证据。

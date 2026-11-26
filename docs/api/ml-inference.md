@@ -2,7 +2,7 @@
 
 **Research and teaching only. Not a medical device; not for clinical diagnosis; no diagnostic, treatment, or prognosis advice.**
 
-OpenAPI is served at `/openapi.json` and Swagger UI at `/docs`. The API accepts complete NIfTI-1 `.nii` and `.nii.gz` volumes via multipart upload; it does not accept paths, URLs, archive files, or caller-selected model files.
+OpenAPI is served at `/openapi.json` and Swagger UI at `/docs`. The API accepts complete NIfTI-1 `.nii` and `.nii.gz` volumes via multipart upload; it does not accept paths, URLs, archive files, or caller-selected model files. The [API index](README.md) records the ABP and FastAPI schema URLs and safe inspection commands.
 
 All `/v1/*` data endpoints require `Authorization: Bearer <ML_SERVICE_API_KEY>`. If the service key is missing or empty, inference, evaluation, and prediction download fail closed with `503 SERVICE_AUTH_NOT_CONFIGURED`; `/health`, `/ready`, `/models`, and OpenAPI remain available for diagnosis. Compose supplies the same generated secret to the ABP client and FastAPI service without logging it.
 
@@ -47,6 +47,6 @@ The ONNX Runtime CPU path is the existing inference backend. Model input is floa
 - `postprocessingMilliseconds`: sigmoid/threshold, inverse resize, NIfTI encoding, SHA-256 and prediction payload/base-provenance persistence. Final idempotency receipt writes are excluded.
 - The service stores prediction NIfTI files and provenance sidecars under a configured local object-storage root. Returned keys are deterministic UUIDs derived from an opaque requestId; evaluation only accepts that restricted key format. User MRI uploads are not persisted.
 - Correlation IDs are validated or regenerated and are returned in response headers/bodies and stored with prediction provenance. Logs exclude request bodies, MRI data, and tokens.
-- The API does not store user or authorization data. Deployment access is restricted to the existing internal service boundary; Compose publishes the port only on loopback. Do not expose this service directly to an untrusted network.
+- The API does not store user or authorization data. Base Compose does not publish port 8000 and attaches the service only to its internal backend network. The optional `compose.dev.yaml` publishes it on `127.0.0.1` for host-based development only. Do not expose this service directly to an untrusted network.
 
 Stable error responses use `{ "error": { "code": "...", "message": "..." }, "correlationId": "..." }`. Important codes include `SERVICE_AUTH_NOT_CONFIGURED`, `SERVICE_AUTH_REQUIRED`, `MODEL_MANIFEST_NOT_CONFIGURED`, `MODEL_MANIFEST_INVALID`, `MODEL_NOT_READY`, `MODEL_HASH_MISMATCH`, `MODEL_ARCHITECTURE_MISMATCH`, `PREPROCESSING_VERSION_MISMATCH`, `INPUT_SIZE_MISMATCH`, `MODEL_THRESHOLD_MISMATCH`, `TEST_ARTIFACT_NOT_ALLOWED`, `MODEL_FORWARD_FAILED`, `INVALID_REQUEST_ID`, `IDEMPOTENCY_CONFLICT`, `REQUEST_RECEIPT_INVALID`, `INVALID_FILE_TYPE`, `INVALID_NIFTI`, `INVALID_DIMENSIONS`, `INVALID_ORIENTATION`, `INVALID_SPATIAL_METADATA`, `INVALID_NUMERIC_RANGE`, `UPLOAD_TOO_LARGE`, `VOLUME_TOO_LARGE`, `INVALID_LABELS`, `LABEL_ALIGNMENT_INVALID`, `PREDICTION_SOURCE_MISMATCH`, `INVALID_OBJECT_REFERENCE`, `PREDICTION_STORAGE_FAILED`, and `INFERENCE_TIMEOUT`.

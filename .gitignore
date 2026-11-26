@@ -25,6 +25,7 @@ __pycache__/
 .DS_Store
 data/
 artifacts/
+backups/
 *.nii
 *.nii.gz
 *.ckpt

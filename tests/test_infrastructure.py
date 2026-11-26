@@ -63,6 +63,16 @@ def test_compose_has_real_dependencies_health_checks_and_no_unused_redis():
         for port in service.get("ports", []):
             assert port.startswith("127.0.0.1:")
         assert "env_file" not in service
+        assert service["mem_limit"]
+        assert service["cpus"]
+        assert service["pids_limit"]
+        assert service["logging"]["driver"] == "local"
+    assert "ports" not in services["postgres"]
+    assert "ports" not in services["ml-inference"]
+    assert services["postgres"]["networks"] == ["backend-internal"]
+    assert services["ml-inference"]["networks"] == ["backend-internal"]
+    assert services["backend"]["networks"] == ["frontend", "backend-internal"]
+    assert compose["networks"]["backend-internal"]["internal"] is True
     assert "POSTGRES_PASSWORD" not in services["ml-inference"]["environment"]
     assert "MINIO_ROOT_PASSWORD" not in services["ml-inference"]["environment"]
     assert services["ml-inference"]["environment"]["ML_SERVICE_API_KEY"].startswith(
@@ -92,7 +102,7 @@ def test_all_application_images_are_non_root_and_have_health_checks():
     assert "git rev-parse HEAD" in minio
     assert "9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a" in minio
     ignored = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
-    assert {".env", ".env.*", "data", "artifacts", ".git"} <= set(ignored)
+    assert {".env", ".env.*", "data", "artifacts", "backups", ".git"} <= set(ignored)
 
 
 def test_ci_contains_all_required_executable_gates():
@@ -118,6 +128,8 @@ def test_ci_contains_all_required_executable_gates():
         "docker compose up",
     ):
         assert command in commands
+    assert "docker compose exec -T backend curl" in commands
+    assert "curl --fail http://127.0.0.1:8000" not in commands
 
 
 def test_real_performance_benchmark_is_manual_controlled_and_requires_pass():
@@ -141,8 +153,16 @@ def test_model_and_http_contract_settings_are_versioned():
     values = dotenv_values(ROOT / ".env.example")
     assert values["ML_MODEL_MANIFEST_PATH"] == "/models/model-manifest.yaml"
     assert values["ML_MAX_INFERENCE_BATCH_SIZE"] == "16"
-    assert (values["POSTGRES_PASSWORD"] or "").startswith("replace-")
-    assert (values["MINIO_ROOT_PASSWORD"] or "").startswith("replace-")
+    assert values["POSTGRES_PASSWORD"] == ""
+    assert values["MINIO_ROOT_PASSWORD"] == ""
+    assert values["ML_SERVICE_API_KEY"] == ""
+
+
+def test_host_development_port_overrides_are_loopback_only():
+    compose = yaml.safe_load((ROOT / "compose.dev.yaml").read_text(encoding="utf-8"))
+    assert set(compose["services"]) == {"postgres", "ml-inference"}
+    for service in compose["services"].values():
+        assert all(port.startswith("127.0.0.1:") for port in service["ports"])
 
 
 def test_readmes_and_stage_reports_have_research_disclaimers():
@@ -152,6 +172,9 @@ def test_readmes_and_stage_reports_have_research_disclaimers():
         "apps/web/src/app/proxy/README.md",
         "docs/adr/0001-skeleton.md",
         "docs/test-reports/0001-skeleton.md",
+        "docs/deployment.md",
+        "docs/reproducibility.md",
+        "docs/test-reports/0009-deployment-documentation.md",
     )
     for relative in paths:
         content = (ROOT / relative).read_text(encoding="utf-8")

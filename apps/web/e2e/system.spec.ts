@@ -3,6 +3,9 @@ import { expect, test } from '@playwright/test';
 test('status refresh, errors, research disclaimer, and responsive layout', async ({
   page,
 }, testInfo) => {
+  await page.route('**/api/abp/application-configuration**', async (route) => {
+    await route.fulfill({ json: { auth: { grantedPolicies: {} } } });
+  });
   const unexpectedErrors: string[] = [];
   page.on('pageerror', (error) => unexpectedErrors.push(error.message));
   page.on('console', (message) => {
@@ -55,5 +58,7 @@ test('status refresh, errors, research disclaimer, and responsive layout', async
   }));
   expect(layout.content).toBeLessThanOrEqual(layout.viewport);
   expect(layout.imageReady).toBe(true);
+  await page.goto('/studies');
+  await expect(page.getByRole('heading', { name: '无权访问此功能' })).toBeVisible();
   expect(unexpectedErrors).toEqual([]);
 });

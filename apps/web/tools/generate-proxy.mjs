@@ -52,11 +52,115 @@ for (const relativePath of readdirSync(proxyRoot, { recursive: true })) {
       return (node) => ts.visitNode(node, visit);
     },
   ]);
-  const content = ts
+  const withUploadProgress = ts.transform(transformed.transformed[0], [
+    (context) => {
+      const factory = context.factory;
+      const visitUploadRequest = (node) => {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === 'request' &&
+          node.arguments.length > 0 &&
+          ts.isObjectLiteralExpression(node.arguments[0]) &&
+          !node.arguments[0].properties.some(
+            (property) =>
+              ts.isPropertyAssignment(property) && property.name.getText(source) === 'reportProgress',
+          )
+        ) {
+          const request = node.arguments[0];
+          const updatedRequest = factory.updateObjectLiteralExpression(request, [
+            ...request.properties,
+            factory.createPropertyAssignment(
+              'reportProgress',
+              factory.createPropertyAccessChain(
+                factory.createIdentifier('config'),
+                factory.createToken(ts.SyntaxKind.QuestionDotToken),
+                'reportProgress',
+              ),
+            ),
+          ]);
+          return factory.updateCallExpression(node, node.expression, node.typeArguments, [
+            updatedRequest,
+            ...node.arguments.slice(1),
+          ]);
+        }
+        return ts.visitEachChild(node, visitUploadRequest, context);
+      };
+      const visit = (node) => {
+        if (
+          ts.isPropertyDeclaration(node) &&
+          node.initializer &&
+          ts.isArrowFunction(node.initializer) &&
+          node.initializer.parameters.some(
+            (parameter) =>
+              parameter.type &&
+              ts.isTypeReferenceNode(parameter.type) &&
+              parameter.type.typeName.getText(source) === 'FormData',
+          )
+        ) {
+          const arrow = node.initializer;
+          const parameters = arrow.parameters.map((parameter) => {
+            if (
+              ts.isIdentifier(parameter.name) &&
+              parameter.name.text === 'config' &&
+              parameter.type
+            ) {
+              const progressProperty = factory.createPropertySignature(
+                undefined,
+                'reportProgress',
+                factory.createToken(ts.SyntaxKind.QuestionToken),
+                factory.createKeywordTypeNode(ts.SyntaxKind.BooleanKeyword),
+              );
+              return factory.updateParameterDeclaration(
+                parameter,
+                parameter.modifiers,
+                parameter.dotDotDotToken,
+                parameter.name,
+                parameter.questionToken,
+                factory.createIntersectionTypeNode([
+                  parameter.type,
+                  factory.createTypeLiteralNode([progressProperty]),
+                ]),
+                parameter.initializer,
+              );
+            }
+            return parameter;
+          });
+          const body = ts.visitNode(arrow.body, visitUploadRequest);
+          const updatedArrow = factory.updateArrowFunction(
+            arrow,
+            arrow.modifiers,
+            arrow.typeParameters,
+            parameters,
+            arrow.type,
+            arrow.equalsGreaterThanToken,
+            body,
+          );
+          return factory.updatePropertyDeclaration(
+            node,
+            node.modifiers,
+            node.name,
+            node.questionToken ?? node.exclamationToken,
+            node.type,
+            updatedArrow,
+          );
+        }
+        return ts.visitEachChild(node, visit, context);
+      };
+      return (node) => ts.visitNode(node, visit);
+    },
+  ]);
+  let content = ts
     .createPrinter({ newLine: ts.NewLineKind.LineFeed })
-    .printFile(transformed.transformed[0]);
+    .printFile(withUploadProgress.transformed[0]);
+  if (filePath.endsWith(path.join('research', 'brain-study.service.ts'))) {
+    content = content
+      .replace(/^\s+UploadBrainStudyInput,\r?\n/gm, '')
+      .replace(/^\s+UploadGroundTruthInput,\r?\n/gm, '');
+  }
   const options = await prettier.resolveConfig(filePath);
   writeFileSync(filePath, await prettier.format(content, { ...options, filepath: filePath }));
+  withUploadProgress.dispose();
   transformed.dispose();
 }
 

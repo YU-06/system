@@ -1,0 +1,109 @@
+<section class="feature-page" aria-labelledby="experiment-title">
+  <header class="feature-heading">
+    <div>
+      <p class="eyebrow">{{ text.experimentEyebrow }}</p>
+      <h1 id="experiment-title">{{ text.experimentsTitle }}</h1>
+      <p class="muted">{{ text.experimentTraceIntro }}</p>
+    </div>
+    <button class="secondary-button" type="button" (click)="load()">{{ text.refresh }}</button>
+  </header>
+  <section class="panel">
+    <form class="filter-form" (submit)="$event.preventDefault(); load()">
+      <label
+        ><span>{{ text.filterExperiments }}</span
+        ><input [formControl]="filter"
+      /></label>
+      <label
+        ><span>{{ text.randomSeed }}</span
+        ><input [formControl]="seed" type="number" min="0"
+      /></label>
+      <button class="secondary-button" type="submit">{{ text.filter }}</button>
+    </form>
+    @if (filterError()) {
+      <p class="error-note" role="alert">{{ text.invalidSeed }}</p>
+    }
+    @let state = store.state();
+    @switch (state.kind) {
+      @case ('loading') {
+        <p class="state-message" role="status">{{ text.loading }}</p>
+      }
+      @case ('empty') {
+        <p class="state-message" role="status">{{ text.noExperiments }}</p>
+      }
+      @case ('error') {
+        <p class="error-note" role="alert">
+          {{ text.requestFailed }}
+          @if (state.correlationId) {
+            <code>{{ state.correlationId }}</code>
+          }
+        </p>
+        <button class="secondary-button" type="button" (click)="load()">
+          {{ text.retryLoad }}
+        </button>
+      }
+      @case ('success') {
+        <div class="table-wrap">
+          <table>
+            <caption>
+              {{
+                text.experimentTableCaption
+              }}
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">{{ text.experimentName }}</th>
+                <th scope="col">{{ text.randomSeed }}</th>
+                <th scope="col">{{ text.modelVersion }}</th>
+                <th scope="col">{{ text.configurationHash }}</th>
+                <th scope="col">{{ text.splitHash }}</th>
+                <th scope="col">{{ text.gitCommit }}</th>
+                <th scope="col">{{ text.experimentStatus }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (experiment of state.experiments; track experiment.id) {
+                <tr>
+                  <td>{{ experiment.experimentName }}</td>
+                  <td>{{ experiment.randomSeed }}</td>
+                  <td>
+                    <code>{{ experiment.modelVersionId }}</code>
+                  </td>
+                  <td>
+                    <code>{{ experiment.configHash }}</code>
+                  </td>
+                  <td>
+                    <code>{{ experiment.datasetSplitHash }}</code>
+                  </td>
+                  <td>
+                    <code>{{ experiment.gitCommit }}</code>
+                  </td>
+                  <td>{{ metricsStatus(experiment.metricsJson) }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="muted">{{ text.experimentCount }}: {{ state.totalCount }}</p>
+        <div class="pagination" [attr.aria-label]="text.pagination">
+          <button
+            class="secondary-button"
+            type="button"
+            [disabled]="store.pageIndex() === 0"
+            (click)="changePage(-1)"
+          >
+            {{ text.previousPage }}
+          </button>
+          <span>{{ text.pageNumber }} {{ store.pageIndex() + 1 }}</span>
+          <button
+            class="secondary-button"
+            type="button"
+            [disabled]="(store.pageIndex() + 1) * 20 >= state.totalCount"
+            (click)="changePage(1)"
+          >
+            {{ text.nextPage }}
+          </button>
+        </div>
+      }
+    }
+  </section>
+</section>

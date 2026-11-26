@@ -9,8 +9,8 @@
     "lint": "eslint src",
     "test": "ng test --watch=false",
     "test:e2e": "playwright test",
-    "format": "prettier --write src angular.json tsconfig*.json eslint.config.mjs proxy.conf.cjs playwright.config.ts",
-    "format:check": "prettier --check src angular.json tsconfig*.json eslint.config.mjs proxy.conf.cjs playwright.config.ts",
+    "format": "prettier --write src e2e angular.json tsconfig*.json eslint.config.mjs proxy.conf.cjs playwright.config.ts",
+    "format:check": "prettier --check src e2e angular.json tsconfig*.json eslint.config.mjs proxy.conf.cjs playwright.config.ts",
     "generate-proxy": "node tools/generate-proxy.mjs"
   },
   "dependencies": {

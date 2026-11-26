@@ -1,0 +1,128 @@
+<section class="feature-page" aria-labelledby="job-detail-title">
+  <p class="eyebrow">{{ text.jobEyebrow }}</p>
+  <h1 id="job-detail-title">{{ text.jobDetailTitle }}</h1>
+  <a class="back-link" routerLink="/jobs">{{ text.backToJobs }}</a>
+
+  @if (store.transientPollError()) {
+    <p class="warning-note" role="status">{{ text.pollTemporarilyUnavailable }}</p>
+  }
+  @if (store.actionError()) {
+    <p class="error-note" role="alert">
+      {{ text.requestFailed }}
+      @if (store.actionError() !== 'request') {
+        <code>{{ store.actionError() }}</code>
+      }
+    </p>
+  }
+  @let state = store.detailState();
+  @switch (state.kind) {
+    @case ('loading') {
+      <p class="state-message" role="status">{{ text.loading }}</p>
+    }
+    @case ('error') {
+      <div class="panel">
+        <p class="error-note" role="alert">
+          {{ text.requestFailed }}
+          @if (state.correlationId) {
+            <code>{{ state.correlationId }}</code>
+          }
+        </p>
+      </div>
+    }
+    @case ('success') {
+      <article class="panel">
+        <dl class="metadata">
+          <div>
+            <dt>{{ text.jobId }}</dt>
+            <dd>
+              <code>{{ state.job.id }}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>{{ text.jobStatus }}</dt>
+            <dd>{{ stateLabel(state.job.status) }}</dd>
+          </div>
+          <div>
+            <dt>{{ text.progress }}</dt>
+            <dd>
+              <progress max="100" [value]="state.job.progress ?? 0"></progress>
+              {{ state.job.progress ?? 0 }}%
+            </dd>
+          </div>
+          <div>
+            <dt>{{ text.studyId }}</dt>
+            <dd>
+              <code>{{ state.job.studyId }}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>{{ text.modelVersion }}</dt>
+            <dd>{{ state.job.modelSemanticVersion || text.notAvailable }}</dd>
+          </div>
+          <div>
+            <dt>{{ text.preprocessingVersion }}</dt>
+            <dd>{{ state.job.preprocessingVersion || text.notAvailable }}</dd>
+          </div>
+          <div>
+            <dt>{{ text.retryCount }}</dt>
+            <dd>{{ state.job.retryCount ?? 0 }}</dd>
+          </div>
+          <div>
+            <dt>{{ text.correlationId }}</dt>
+            <dd>
+              <code>{{ state.job.correlationId }}</code>
+            </dd>
+          </div>
+          @if (state.job.errorCode) {
+            <div>
+              <dt>{{ text.jobErrorCode }}</dt>
+              <dd>
+                <code>{{ state.job.errorCode }}</code>
+              </dd>
+            </div>
+          }
+          @if (state.job.errorMessage) {
+            <div>
+              <dt>{{ text.jobErrorMessage }}</dt>
+              <dd>{{ state.job.errorMessage }}</dd>
+            </div>
+          }
+        </dl>
+        @if (state.job.status === 'Pending' || state.job.status === 'Running') {
+          @if (canCancel$ | async) {
+            <button class="secondary-button" type="button" (click)="store.cancel(state.job)">
+              {{ text.cancelJob }}
+            </button>
+          }
+        }
+        @if (state.job.status === 'Failed' && (state.job.retryCount ?? 0) < 3) {
+          @if (canRetry$ | async) {
+            <button class="secondary-button" type="button" (click)="store.retry(state.job)">
+              {{ text.retryJob }}
+            </button>
+          }
+        }
+        @if (state.job.status === 'Cancelled') {
+          <p class="warning-note">{{ text.logicalCancelNotice }}</p>
+        }
+        @if (store.resultId(); as resultId) {
+          <a class="primary-button link-button" [routerLink]="['/results', resultId]">
+            {{ text.openResult }}
+          </a>
+        } @else if (store.resultLoadError()) {
+          <p class="error-note" role="alert">
+            {{ text.resultLoadFailed }}
+            @if (store.resultLoadError() !== 'request') {
+              <code>{{ store.resultLoadError() }}</code>
+            }
+          </p>
+          <button class="secondary-button" type="button" (click)="store.retryResult(state.job.id)">
+            {{ text.retryLoad }}
+          </button>
+        } @else if (state.job.status === 'Succeeded') {
+          <p class="warning-note">{{ text.resultNotAvailableYet }}</p>
+        }
+      </article>
+    }
+  }
+</section>

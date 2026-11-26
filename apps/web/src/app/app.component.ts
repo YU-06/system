@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { AsyncPipe } from '@angular/common';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { NgIcon, provideIcons } from '@ng-icons/core';
 import {
@@ -8,10 +9,11 @@ import {
   lucideShieldCheck,
 } from '@ng-icons/lucide';
 import { I18nService } from './localization/i18n.service';
+import { ResearchAccessService } from './shared/research-access.service';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive, NgIcon],
+  imports: [AsyncPipe, RouterOutlet, RouterLink, RouterLinkActive, NgIcon],
   providers: [
     provideIcons({ lucideActivity, lucideArrowUpRight, lucideFlaskConical, lucideShieldCheck }),
   ],
@@ -50,6 +52,30 @@ import { I18nService } from './localization/i18n.service';
             <ng-icon name="lucideArrowUpRight" aria-hidden="true" />
             <span>{{ text.apiDocs }}</span>
           </a>
+          @if (canStudies$ | async) {
+            <a routerLink="/studies" routerLinkActive="active" ariaCurrentWhenActive="page">
+              <ng-icon name="lucideActivity" aria-hidden="true" />
+              <span>{{ text.studiesTitle }}</span>
+            </a>
+          }
+          @if (canJobs$ | async) {
+            <a routerLink="/jobs" routerLinkActive="active" ariaCurrentWhenActive="page">
+              <ng-icon name="lucideActivity" aria-hidden="true" />
+              <span>{{ text.jobsTitle }}</span>
+            </a>
+          }
+          @if (canModels$ | async) {
+            <a routerLink="/models" routerLinkActive="active" ariaCurrentWhenActive="page">
+              <ng-icon name="lucideActivity" aria-hidden="true" />
+              <span>{{ text.modelsTitle }}</span>
+            </a>
+          }
+          @if (canExperiments$ | async) {
+            <a routerLink="/experiments" routerLinkActive="active" ariaCurrentWhenActive="page">
+              <ng-icon name="lucideFlaskConical" aria-hidden="true" />
+              <span>{{ text.experimentsTitle }}</span>
+            </a>
+          }
         </nav>
         <div class="sidebar-foot">
           <ng-icon name="lucideFlaskConical" aria-hidden="true" />
@@ -61,6 +87,9 @@ import { I18nService } from './localization/i18n.service';
       <div class="workspace">
         <header class="topbar">
           <span>{{ text.brandCaption }}</span>
+          @if (access.state() === 'unavailable') {
+            <span class="error-note" role="alert">{{ text.permissionsUnavailable }}</span>
+          }
           <span class="research-badge"
             ><ng-icon name="lucideFlaskConical" aria-hidden="true" />{{ text.researchOnly }}</span
           >
@@ -76,4 +105,9 @@ import { I18nService } from './localization/i18n.service';
 })
 export class AppComponent {
   readonly text = inject(I18nService).text;
+  readonly access = inject(ResearchAccessService);
+  readonly canStudies$ = this.access.can$('BrainSeg.BrainStudies');
+  readonly canJobs$ = this.access.can$('BrainSeg.SegmentationJobs');
+  readonly canModels$ = this.access.can$('BrainSeg.ModelVersions');
+  readonly canExperiments$ = this.access.can$('BrainSeg.ExperimentRuns');
 }

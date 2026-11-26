@@ -120,6 +120,21 @@ def test_ci_contains_all_required_executable_gates():
         assert command in commands
 
 
+def test_real_performance_benchmark_is_manual_controlled_and_requires_pass():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/research-benchmark.yml").read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    job = workflow["jobs"]["benchmark"]
+    assert "brainseg-research-cpu" in job["runs-on"]
+    assert job["environment"] == "research-controlled"
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "--allow-persistent-results" in commands
+    assert "['status'] == 'Pass'" in commands
+    assert "BRAINSEG_BENCHMARK_API_KEY" in job["env"]
+
+
 def test_model_and_http_contract_settings_are_versioned():
     settings = json.loads((ROOT / "services/ml-inference/logging.json").read_text(encoding="utf-8"))
     assert settings["formatters"]["json"]["()"] == "brainseg_inference.logging.JsonFormatter"

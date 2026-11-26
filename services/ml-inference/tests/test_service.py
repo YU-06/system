@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from unittest.mock import Mock
 
 import nibabel as nib
 import numpy as np
@@ -16,6 +17,7 @@ from brainseg_inference.logging import JsonFormatter, correlation_id
 from brainseg_inference.manifest import ModelManifest
 from brainseg_inference.runtime import OnnxPredictor, Predictor
 from brainseg_inference.settings import Settings
+from brainseg_inference.storage import LocalObjectStorage
 from fastapi.testclient import TestClient
 from numpy.typing import NDArray
 from onnx import TensorProto, helper
@@ -200,6 +202,44 @@ def test_segment_request_id_replays_the_same_artifact_and_rejects_reuse(tmp_path
         assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
 
 
+def test_unexpected_receipt_write_failure_is_redacted_and_replay_recovers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    settings = service_settings(object_storage_path=tmp_path)
+    original = LocalObjectStorage.save_request_response
+    logger = Mock()
+    fail_once = True
+
+    def fail_first_write(storage, *args, **kwargs):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise OSError("synthetic-private-content secret-token")
+        return original(storage, *args, **kwargs)
+
+    monkeypatch.setattr(LocalObjectStorage, "save_request_response", fail_first_write)
+    monkeypatch.setattr("brainseg_inference.app.configure_logging", lambda: logger)
+    with authenticated_client(settings, PositivePredictor()) as client:
+        request = {
+            "data": {"requestId": "receipt-recovery"},
+            "files": {"file": ("source.nii", volume_bytes(), "application/octet-stream")},
+        }
+        failed = client.post("/v1/segment", **request)
+        assert failed.status_code == 500
+        assert failed.json()["error"]["code"] == "INTERNAL_ERROR"
+        assert "synthetic-private-content" not in failed.text
+        assert "secret-token" not in failed.text
+
+        recovered = client.post("/v1/segment", **request)
+        assert recovered.status_code == 200
+        assert len(list(tmp_path.glob("*.nii.gz"))) == 1
+
+    extra = logger.error.call_args.kwargs["extra"]
+    assert extra == {"errorCode": "INTERNAL_ERROR", "diagnosticType": "OSError"}
+    assert "synthetic-private-content" not in str(logger.error.call_args)
+    assert "secret-token" not in str(logger.error.call_args)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -247,6 +287,7 @@ def test_internal_service_key_protects_inference_and_prediction_download(tmp_pat
             files={"file": ("source.nii", payload, "application/octet-stream")},
         )
         assert denied.status_code == 401
+        assert denied.json()["error"]["code"] == "SERVICE_AUTH_REQUIRED"
         headers = {"Authorization": "Bearer service-test-key"}
         response = client.post(
             "/v1/segment",
@@ -305,6 +346,21 @@ def test_evaluate_requires_traceable_prediction_and_reports_patient_and_slice_me
         assert result["groundTruthSha256"] == hashlib.sha256(truth).hexdigest()
         assert result["requestId"] == segmentation["requestId"]
         assert result["weightSha256"] is None
+
+        invalid_labels = client.post(
+            "/v1/evaluate",
+            data={"predictionObjectKey": segmentation["predictionObjectKey"]},
+            files={
+                "file": ("source.nii", source, "application/octet-stream"),
+                "label": (
+                    "invalid-labels.nii",
+                    volume_bytes(np.full((8, 10, 3), 3, dtype=np.float32)),
+                    "application/octet-stream",
+                ),
+            },
+        )
+        assert invalid_labels.status_code == 400
+        assert invalid_labels.json()["error"]["code"] == "INVALID_LABELS"
 
 
 def test_empty_masks_have_defined_metrics(tmp_path: Path):
@@ -398,6 +454,13 @@ def test_invalid_type_nifti_and_values_return_safe_errors(tmp_path: Path):
         )
         assert invalid_values.json()["error"]["code"] == "INVALID_NUMERIC_RANGE"
         assert "Traceback" not in invalid_values.text
+        invalid_request_id = client.post(
+            "/v1/segment",
+            data={"requestId": "unsafe request id"},
+            files={"file": ("fixture.nii", volume_bytes(), "application/octet-stream")},
+        )
+        assert invalid_request_id.status_code == 400
+        assert invalid_request_id.json()["error"]["code"] == "INVALID_REQUEST_ID"
 
 
 def test_non_axial_axis_order_is_rejected_without_reorientation(tmp_path: Path):
@@ -432,6 +495,7 @@ def test_upload_decompression_and_dimension_limits(tmp_path: Path):
             "/v1/segment", files={"file": ("fixture.nii", b"123", "application/octet-stream")}
         )
         assert response.status_code == 413
+        assert response.json()["error"]["code"] == "UPLOAD_TOO_LARGE"
     expanded_limited = service_settings(
         max_decompressed_bytes=100,
         object_storage_path=tmp_path / "expanded",

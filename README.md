@@ -161,6 +161,8 @@ Windows 已安装 Edge 时可用 `$env:PLAYWRIGHT_CHANNEL='msedge'`，跳过 Chr
 
 CI 分别执行 .NET restore/build/format/test、npm ci/format/lint/test/build/E2E、Python Ruff/pytest，以及所有 Docker 镜像构建与 Compose 健康冒烟测试。实际执行结果、环境阻塞和未执行项见 [测试报告](docs/test-reports/0001-skeleton.md)，架构选择见 [ADR](docs/adr/0001-skeleton.md)。
 
+阶段八质量门禁增加需求—用例—命令—运行记录—状态矩阵、后端 Worker 恢复/HTTP 熔断测试，以及仅接受真实研究权重的推理性能脚本。性能工作流仅允许手动触发、受控 self-hosted CPU runner 与隔离对象存储；没有真实体数据或研究权重时，性能结果保持 `NotRun`。本地和 CI 当前可执行状态、失败证据与剩余阻塞见[阶段八报告](docs/test-reports/0008-system-quality-gates.md)和[阶段八 ADR](docs/adr/0007-system-quality-gates.md)。该阶段不启动完整训练或正式测试集。
+
 ## 日志与边界
 
 ABP/Serilog、FastAPI、Nginx 输出 JSON 日志，统一使用 `CorrelationId` 字段与 `X-Correlation-Id` 请求头。后端与反向代理验证外部 ID，只接受 1–64 位 ASCII 字母、数字、`-`、`_`，否则重新生成；命名 ML HTTP 客户端传播 ID，Python 在日志、响应头和响应体中保持一致。不记录 MRI 内容、令牌、患者真实身份或请求体。

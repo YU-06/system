@@ -1,4 +1,4 @@
-name: Skeleton CI
+name: Phase 8 Quality Gates
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: skeleton-${{ github.workflow }}-${{ github.ref }}
+  group: quality-gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -31,6 +31,8 @@ jobs:
       BRAINSEG_TEST_POSTGRES: Host=127.0.0.1;Port=54329;Database=postgres;Username=postgres;Timeout=5
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare test evidence directory
+        run: mkdir -p "${RUNNER_TEMP}/quality-results/backend"
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
@@ -38,8 +40,21 @@ jobs:
       - run: dotnet restore apps/backend/BrainSeg.slnx --locked-mode
       - run: dotnet build apps/backend/BrainSeg.slnx --configuration Release --no-restore
       - run: dotnet format apps/backend/BrainSeg.slnx --verify-no-changes --no-restore
-      - run: dotnet test apps/backend/BrainSeg.slnx --configuration Release --no-build --logger trx
+      - name: Domain, application, EF Core, authorization, and PostgreSQL tests
+        run: >-
+          dotnet test apps/backend/BrainSeg.slnx --configuration Release --no-build
+          --results-directory "${RUNNER_TEMP}/quality-results/backend"
+          --logger "console;verbosity=minimal"
+          --logger "trx;LogFileName=backend-tests.trx"
       - run: dotnet ef migrations has-pending-model-changes --project apps/backend/src/BrainSeg.EntityFrameworkCore --startup-project apps/backend/src/BrainSeg.HttpApi.Host --configuration Release --no-build
+      - name: Retain backend test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-evidence
+          path: ${{ runner.temp }}/quality-results/backend/*.trx
+          if-no-files-found: warn
+          retention-days: 14
 
   web:
     runs-on: ubuntu-24.04
@@ -54,6 +69,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
+      - name: Prepare test evidence directory
+        run: mkdir -p "${RUNNER_TEMP}/quality-results/web"
       - run: npm run format:check
       - run: npm run lint
       - run: npx tsc --noEmit --project tsconfig.json
@@ -61,6 +78,14 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+      - name: Retain browser test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: angular-playwright-evidence
+          path: apps/web/test-results/
+          if-no-files-found: warn
+          retention-days: 14
       - run: npm audit --audit-level=high
 
   python:
@@ -75,8 +100,19 @@ jobs:
       - run: uv sync --frozen --extra training --extra reports
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen ruff check .
-      - run: uv run --frozen pytest
+      - name: Prepare test evidence directory
+        run: mkdir -p "${RUNNER_TEMP}/quality-results/python"
+      - name: Inference, training, and infrastructure tests
+        run: uv run --frozen pytest -q --junitxml="${RUNNER_TEMP}/quality-results/python/pytest.xml"
       - run: uv run --frozen python -m training validate-config
+      - name: Retain Python test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-evidence
+          path: ${{ runner.temp }}/quality-results/python/pytest.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   docker:
     runs-on: ubuntu-24.04

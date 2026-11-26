@@ -68,7 +68,7 @@ def test_metrics_include_empty_and_disjoint_cases():
 
 def test_baseline_protocol_has_no_test_leakage_or_fabricated_results():
     config = load_config(Path("ml/configs/baseline.yaml"))
-    assert config.experiment_seeds == [42, 2024, 3407]
+    assert config.experiment_seeds == [17, 42, 2024]
     assert config.threshold_source == "validation_only"
     assert config.test_execution == "locked_until_protocol_frozen"
     assert config.result_status == "NotRun"

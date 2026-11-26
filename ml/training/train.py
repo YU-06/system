@@ -9,6 +9,14 @@ from torch.utils.data import DataLoader
 
 from training import DISCLAIMER
 from training.datasets.brats2d import Brats2DDataset
+from training.experiment_protocol import (
+    assert_only_declared_condition_differences,
+    build_condition_run_config,
+    condition_for_architecture,
+    load_experiment_protocol,
+    protocol_sha256,
+    validate_training_config,
+)
 from training.losses import BCEDiceLoss
 from training.models import build_model
 from training.protocol import (
@@ -27,6 +35,7 @@ from training.run_io import (
     reconcile_history,
     restore_rng,
     save_checkpoint,
+    state_dict_sha256,
 )
 from training.transforms import SynchronizedTransforms
 from training.validate import evaluate_model
@@ -65,12 +74,22 @@ def run_training(
     resume: Path | None = None,
     stop_after_epoch: int | None = None,
 ) -> Path:
+    protocol = load_experiment_protocol(Path(config.experiment_protocol_path))
+    if config.execution_mode == "research":
+        validate_training_config(protocol, config)
+    paired_configs = [
+        build_condition_run_config(protocol, config.model_dump(mode="json"), name, seed)
+        for name in protocol.conditions
+    ]
+    assert_only_declared_condition_differences(paired_configs[0], paired_configs[1], protocol)
     checked_cache(config)
     if architecture not in config.architectures or seed not in config.experiment_seeds:
         raise ValueError("Model and seed must belong to the shared experiment protocol.")
     if stop_after_epoch is not None and not 1 <= stop_after_epoch <= config.max_epochs:
         raise ValueError("Interruption epoch must lie within the configured training protocol.")
     directory = Path(config.output_directory) / architecture / f"seed_{seed}"
+    condition_name, condition = condition_for_architecture(protocol, architecture)
+    run_id = f"{condition.run_id_prefix}-seed-{seed}"
     if resume is None and directory.exists() and any(directory.iterdir()):
         raise FileExistsError("An existing run must be resumed explicitly, not overwritten.")
     set_global_seed(seed)
@@ -100,6 +119,12 @@ def run_training(
         checkpoint = load_checkpoint(resume, config)
         if checkpoint["architecture"] != architecture or checkpoint["seed"] != seed:
             raise ValueError("Resume model and seed do not match the selected run.")
+        if (
+            checkpoint.get("run_id") != run_id
+            or checkpoint.get("condition_name") != condition_name
+            or checkpoint.get("model_version") != condition.model_version
+        ):
+            raise ValueError("Resume run identity differs from the preregistered model condition.")
         if resume.resolve().parent != directory.resolve():
             raise ValueError("Resume must continue the original run directory.")
         model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -151,6 +176,8 @@ def run_training(
                 count += batch["image"].shape[0]
             result = evaluate_model(model, validation, config)
             improved, stop = stopping.update(result.mean_patient.dice)
+            model_state = model.state_dict()
+            git_commit = (directory / "git_commit.txt").read_text(encoding="ascii").strip()
             row = {
                 "epoch": epoch,
                 "data_kind": training.cache.data_kind,
@@ -164,13 +191,19 @@ def run_training(
             checkpoint = {
                 "schema_version": 1,
                 "architecture": architecture,
+                "condition_name": condition_name,
+                "model_version": condition.model_version,
+                "run_id": run_id,
+                "git_commit": git_commit,
                 "seed": seed,
                 "epoch": epoch,
                 "config_hash": config_hash(config),
+                "protocol_sha256": protocol_sha256(Path(config.experiment_protocol_path)),
                 "split_sha256": sha256_file(Path(config.split_manifest)),
                 "cache_sha256": sha256_file(Path(config.cache_index)),
                 "data_kind": training.cache.data_kind,
-                "model_state": model.state_dict(),
+                "model_state": model_state,
+                "model_weight_sha256": state_dict_sha256(model_state),
                 "optimizer_state": optimizer.state_dict(),
                 "best_validation_dice": stopping.best,
                 "stale_epochs": stopping.stale_epochs,
@@ -189,12 +222,20 @@ def run_training(
                 break
     status = {
         "architecture": architecture,
+        "condition_name": condition_name,
+        "model_version": condition.model_version,
+        "run_id": run_id,
         "seed": seed,
         "completed_epoch": completed_epoch,
         "data_kind": training.cache.data_kind,
         "config_hash": config_hash(config),
+        "protocol_sha256": protocol_sha256(Path(config.experiment_protocol_path)),
+        "git_commit": (directory / "git_commit.txt").read_text(encoding="ascii").strip(),
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "best_checkpoint_bytes": (directory / "best.ckpt").stat().st_size,
+        "best_model_weight_sha256": load_checkpoint(directory / "best.ckpt", config)[
+            "model_weight_sha256"
+        ],
         "test_metrics": {"status": "NotRun"},
         "disclaimer": DISCLAIMER,
     }

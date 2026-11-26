@@ -115,7 +115,7 @@ docker compose up -d --force-recreate ml-inference
 
 模型输入是 float32 `[1,1,256,256]`，输出为同尺寸 logits，不是已 sigmoid 的概率。启动时核对 SHA-256，加载失败保留进程供诊断，不静默使用随机模型。阈值必须来自验证集，不能用测试集调参。
 
-`/v1/segment` 的 multipart 字段为 `file` 和 `slice_index`，返回版本、阈值、哈希、计时、关联 ID 和 256×256 掩膜；`/v1/evaluate` 另接收 `label`，返回明确标记为切片级的指标，**不能替代患者级主指标**。正式患者级三维重建、配对检验、95% CI、训练产物归档属于后续实验阶段，未执行。
+`/v1/segment` 的 multipart 字段为 `file` 和 `slice_index`，返回版本、阈值、哈希、计时、关联 ID 和 256×256 掩膜；`/v1/evaluate` 另接收 `label`，返回明确标记为切片级的指标，**不能替代患者级主指标**。正式患者级三维重建、验证集阈值冻结、配对检验、95% CI 与可追溯论文报表现已实现；真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。禁止把合成 smoke 作为论文结果。
 
 ```powershell
 uv run --frozen python -m training validate-config
@@ -123,6 +123,8 @@ uv run --frozen python -m training split --patients data/patient_ids.json --outp
 ```
 
 患者 ID 文件必须是真实数据集中 369 个不同的去标识化 ID 的 JSON 数组，不是切片列表。工具固定生成 258/74/37 患者级划分和 SHA-256；没有真实患者清单时不会伪造 manifest。共享 `flair-v1` 预处理只使用当前体数据非零脑区统计量。默认协议为 3 个种子、相同通道与训练参数、最大 100 轮、验证 Dice 15 轮早停、测试集锁定。
+
+阶段四固定种子为 17、42、2024；阈值由验证集三维重建后的患者宏平均 Dice 从 0.30–0.70（0.05 步长）中选择，并提供固定 0.50 敏感性分析。测试 CLI 仅接受配置、划分、模型权重和验证报告完全匹配的冻结记录。真实产物齐备后可用 `uv run --frozen --extra reports python -m training.generate_reports --runs artifacts/runs --split artifacts/split_manifest.json --cache artifacts/preprocessed/index.json --output artifacts/paper-reports` 生成表图，固定 0.50 敏感性分析另加 `--threshold-mode fixed_050` 并写入独立输出目录；该命令不训练、不测试，合成或不完整输入只生成 `NotRun` 模板。
 
 ## 验证与 CI
 
@@ -137,7 +139,7 @@ dotnet format apps/backend/BrainSeg.slnx --verify-no-changes --no-restore
 dotnet test apps/backend/BrainSeg.slnx --configuration Release --no-build
 uv run --frozen ruff format --check .
 uv run --frozen ruff check .
-uv run --frozen pytest
+uv run --frozen --extra training --extra reports pytest
 ```
 
 前端目录：

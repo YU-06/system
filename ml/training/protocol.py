@@ -28,6 +28,7 @@ class TrainingConfig(BaseModel):
     execution_mode: Literal["research", "smoke"] = "research"
     split_manifest: str = "artifacts/split_manifest.json"
     cache_index: str = "artifacts/preprocessed/index.json"
+    experiment_protocol_path: str = "ml/configs/experiment_protocol.yaml"
     output_directory: str = "artifacts/runs"
     split_seed: int = 42
     experiment_seeds: list[int]
@@ -60,8 +61,8 @@ class TrainingConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_comparison(self) -> "TrainingConfig":
-        if len(set(self.experiment_seeds)) < 3:
-            raise ValueError("At least three distinct experiment seeds are required.")
+        if self.experiment_seeds != [17, 42, 2024]:
+            raise ValueError("The paired research seeds are fixed to [17, 42, 2024].")
         if self.architectures != ["UNet", "AttentionUNet"] or self.foreground_labels != [1, 2, 4]:
             raise ValueError(
                 "The fixed architecture comparison and label mapping must be preserved."
@@ -86,11 +87,28 @@ class TrainingConfig(BaseModel):
             raise ValueError(
                 "Validation threshold candidates must be distinct finite values in (0, 1)."
             )
+        if self.execution_mode == "research" and self.validation_thresholds != [
+            0.3,
+            0.35,
+            0.4,
+            0.45,
+            0.5,
+            0.55,
+            0.6,
+            0.65,
+            0.7,
+        ]:
+            raise ValueError("The research threshold search is fixed to 0.30-0.70 in 0.05 steps.")
         return self
 
 
 def load_config(path: Path) -> TrainingConfig:
     return TrainingConfig.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+
+
+def config_hash(config: TrainingConfig) -> str:
+    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True, allow_nan=False).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def sha256_file(path: Path) -> str:

@@ -20,6 +20,10 @@ class PatientFiles(BaseModel):
     segmentation_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     shape: tuple[int, int, int]
     affine: list[list[float]]
+    spatial_unit: Literal["meter", "mm", "micron", "unknown"]
+    qform_code: int
+    sform_code: int
+    voxel_spacing: tuple[float, float, float]
 
 
 class DatasetScan(BaseModel):
@@ -111,6 +115,12 @@ def scan_dataset(root: Path, *, synthetic: bool = False) -> DatasetScan:
             if not np.isfinite(volume).all() or np.max(np.abs(volume), initial=0) > 1e7:
                 raise ValueError("non-finite or out-of-range FLAIR values")
             whole_tumor_mask(segmentation.get_fdata(dtype=np.float32))
+            spatial_unit, _ = image.header.get_xyzt_units()
+            if spatial_unit not in {"meter", "mm", "micron"}:
+                spatial_unit = "unknown"
+            voxel_spacing = tuple(
+                float(np.linalg.norm(image.affine[:3, axis])) for axis in range(3)
+            )
             patients.append(
                 PatientFiles(
                     patient_id=identifier,
@@ -120,6 +130,10 @@ def scan_dataset(root: Path, *, synthetic: bool = False) -> DatasetScan:
                     segmentation_sha256=sha256_file(labels[0]),
                     shape=tuple(int(value) for value in image.shape),
                     affine=image.affine.tolist(),
+                    spatial_unit=spatial_unit,
+                    qform_code=int(image.header["qform_code"]),
+                    sform_code=int(image.header["sform_code"]),
+                    voxel_spacing=voxel_spacing,
                 )
             )
         except Exception as error:

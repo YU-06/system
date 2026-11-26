@@ -1,0 +1,140 @@
+protocol_id: brats2020-flair-wt-unet-gate-v1
+protocol_version: 1
+dataset: BraTS 2020
+modality: T2-FLAIR
+task: 2D axial Whole Tumor binary segmentation
+preprocessing_version: flair-v1
+split:
+  unit: patient
+  counts: [258, 74, 37]
+  seed: 42
+seeds: [17, 42, 2024]
+shared_training:
+  input_size: 256
+  channels: [32, 64, 128, 256, 512]
+  foreground_labels: [1, 2, 4]
+  loss: BCEWithLogitsLoss+DiceLoss
+  bce_weight: 0.5
+  dice_smoothing: 0.000001
+  optimizer: Adam
+  learning_rate: 0.0001
+  batch_size: 16
+  max_epochs: 100
+  early_stopping_patience: 15
+  early_stopping_min_delta: 0.0
+  train_empty_fraction: 0.5
+  augmentation:
+    train: synchronized_horizontal_vertical_flip_and_90_degree_rotation
+    validation: none
+    test: none
+  horizontal_flip_probability: 0.5
+  vertical_flip_probability: 0.5
+  rotate_90: true
+  device: cpu
+  num_workers: 0
+  cpu_threads: 2
+  test_patient_subset: locked_until_validation_protocol_freeze
+conditions:
+  UNet:
+    architecture: UNet
+    attention_gate: false
+    model_version: unet-v1
+    run_id_prefix: unet
+  AttentionUNet:
+    architecture: AttentionUNet
+    attention_gate: true
+    model_version: attention-gate-v1
+    run_id_prefix: attention-unet
+ablation:
+  name: attention_gate_only
+  changed_component: skip_connection_attention_gate
+  baseline_gate: false
+  treatment_gate: true
+allowed_condition_difference_paths:
+  - model.architecture
+  - model.attention_gate
+  - run_id
+model_selection:
+  selection_subset: validation
+  checkpoint_metric: validation_patient_macro_wt_dice_at_0.50
+  checkpoint_threshold: 0.50
+  threshold_search_subset: validation
+  threshold_metric: patient_macro_wt_dice_after_3d_reconstruction
+  candidate_thresholds: [0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+  sensitivity_threshold: 0.50
+  tie_break:
+    - highest_patient_macro_dice
+    - closest_threshold_to_0.50
+    - lowest_threshold
+  fixed_threshold_sensitivity_mode: validation_fixed_0.50
+evaluation:
+  slice_level: aggregate_binary_pixels_per_axial_slice
+  patient_level: aggregate_all_reconstructed_3d_voxels_per_patient
+  patient_macro: arithmetic_mean_of_patient_level_scores
+  pooled_overall: aggregate_confusion_counts_over_all_patients
+  patient_is_independent_unit: true
+  across_seeds: mean_and_sample_std_of_seed_level_patient_macro_scores
+  patient_distribution: average_each_patient_across_all_three_paired_seeds
+  empty_ground_truth_and_empty_prediction:
+    dice: 1.0
+    iou: 1.0
+    precision: 1.0
+    recall: 1.0
+  empty_ground_truth_and_nonempty_prediction:
+    dice: 0.0
+    iou: 0.0
+    precision: 0.0
+    recall: 0.0
+  nonempty_ground_truth_and_empty_prediction:
+    dice: 0.0
+    iou: 0.0
+    precision: 0.0
+    recall: 0.0
+statistics:
+  primary_comparison: paired_patient_dice_after_patient_level_three_seed_average
+  wilcoxon:
+    alternative: two-sided
+    zero_difference_method: wilcox
+    zero_differences_excluded_and_reported: true
+    insufficient_pairs: report_not_run_without_imputation
+    assumptions:
+      - patients_are_independent_sampling_units
+      - each_difference_is_attention_unet_minus_unet_for_the_same_patient
+      - paired_patient_differences_are_at_least_ordinal_and_approximately_symmetric
+  patient_pair_bootstrap:
+    statistic: mean_paired_patient_dice_difference
+    confidence_level: 0.95
+    resamples: 10000
+    seed: 20261126
+    resampling_unit: patient_pair
+    interval: percentile
+    missing_pairs: report_explicitly_never_impute
+  seed_unit_is_not_independent_patient: true
+  slice_unit_is_not_independent_patient: true
+lesion_volume:
+  physical_unit: mm3
+  require_trusted_nifti_spatial_units: true
+  require_valid_qform_or_sform: true
+  otherwise: voxels_only_and_physical_volume_NotRun
+representative_cases:
+  score: arithmetic_mean_patient_dice_across_both_models_and_all_paired_seeds
+  order: [lowest, median_lower_rank_on_even_count, highest]
+  tie_break: patient_id_ascending
+  include_empty_ground_truth_patients: true
+  select_from: complete_research_test_patient_cohort
+  visualization_seed: 17
+  slice_rule: maximum_ground_truth_wt_area_then_lowest_slice_index; empty_gt_uses_middle_slice
+  prediction_rule: preregistered_visualization_seed_for_each_model
+reporting:
+  require_research_data_kind: true
+  synthetic_data: templates_and_NotRun_manifest_only
+  figures_from_synthetic_data: forbidden
+  source_metadata_required:
+    - run_ids
+    - protocol_sha256
+    - split_sha256
+    - checkpoint_sha256
+    - metric_scope
+    - units
+    - reporting_script_version
+disclaimer: For research and teaching only. Not a medical device. Not for clinical diagnosis.

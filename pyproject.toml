@@ -20,10 +20,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-training = ["torch==2.15.0"]
+training = ["torch==2.15.0", "scipy==1.18.1"]
+reports = ["matplotlib==3.11.2", "scipy==1.18.1"]
 
 [dependency-groups]
-dev = ["httpx==0.28.1", "pytest==9.2.0", "ruff==0.17.4", "onnx==1.23.2"]
+dev = ["httpx==0.28.1", "pytest==9.2.0", "ruff==0.17.4", "onnx==1.23.2", "scipy==1.18.1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["services/ml-inference/brainseg_inference", "ml/training"]

@@ -14,14 +14,28 @@ import yaml
 
 from training import DISCLAIMER
 from training.create_split import load_split
+from training.experiment_protocol import load_experiment_protocol, protocol_sha256
 from training.models import UNet, build_model
 from training.preprocess import CacheManifest, load_cache
-from training.protocol import TrainingConfig, read_hashed_json, resolve_data_path, sha256_file
+from training.protocol import (
+    TrainingConfig,
+    config_hash,
+    read_hashed_json,
+    resolve_data_path,
+    sha256_file,
+)
 
 
-def config_hash(config: TrainingConfig) -> str:
-    payload = json.dumps(config.model_dump(mode="json"), sort_keys=True, allow_nan=False).encode()
-    return hashlib.sha256(payload).hexdigest()
+def state_dict_sha256(state: dict[str, torch.Tensor]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(state):
+        value = state[name].detach().cpu().contiguous()
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(value.dtype).encode("ascii"))
+        digest.update(json.dumps(list(value.shape), separators=(",", ":")).encode("ascii"))
+        digest.update(value.reshape(-1).view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
 
 
 def checked_cache(config: TrainingConfig) -> CacheManifest:
@@ -81,9 +95,15 @@ def load_checkpoint(path: Path, config: TrainingConfig) -> dict:
         "config_hash": config_hash(config),
         "split_sha256": sha256_file(Path(config.split_manifest)),
         "cache_sha256": sha256_file(Path(config.cache_index)),
+        "protocol_sha256": protocol_sha256(Path(config.experiment_protocol_path)),
     }
     if any(checkpoint.get(key) != value for key, value in expected.items()):
         raise ValueError("Checkpoint config, split or cache provenance changed.")
+    state = checkpoint.get("model_state")
+    if not isinstance(state, dict) or state_dict_sha256(state) != checkpoint.get(
+        "model_weight_sha256"
+    ):
+        raise ValueError("Checkpoint model-weight digest does not match the saved tensor state.")
     if (
         checkpoint.get("architecture") not in config.architectures
         or checkpoint.get("seed") not in config.experiment_seeds
@@ -106,6 +126,11 @@ def initialize_run(directory: Path, config: TrainingConfig) -> None:
         yaml.safe_dump(config.model_dump(), sort_keys=True), encoding="utf-8"
     )
     split_path = Path(config.split_manifest)
+    protocol_path = Path(config.experiment_protocol_path)
+    (directory / "experiment_protocol.yaml").write_bytes(protocol_path.read_bytes())
+    (directory / "experiment_protocol.yaml.sha256").write_text(
+        protocol_sha256(protocol_path) + "\n", encoding="ascii"
+    )
     (directory / "split_manifest.json").write_bytes(split_path.read_bytes())
     (directory / "split_manifest.json.sha256").write_text(
         sha256_file(split_path) + "\n", encoding="ascii"
@@ -153,11 +178,42 @@ def verify_freeze(path: Path, checkpoint_path: Path, config: TrainingConfig) -> 
     freeze = read_hashed_json(path)
     if not isinstance(freeze, dict) or freeze.get("kind") != "validation_protocol_freeze":
         raise ValueError("Invalid validation protocol freeze.")
+    required = {
+        "git_commit",
+        "split_sha256",
+        "config_hash",
+        "protocol_sha256",
+        "cache_sha256",
+        "checkpoint_sha256",
+        "model_weight_sha256",
+        "architecture",
+        "condition_name",
+        "model_version",
+        "preprocessing_version",
+        "seed",
+        "run_id",
+        "threshold",
+        "threshold_selection_mode",
+        "evaluation_protocol",
+        "validation_report_sha256",
+        "validation_report",
+        "threshold_source",
+        "training_threshold",
+        "data_kind",
+    }
+    missing = required - freeze.keys()
+    if missing:
+        raise ValueError(f"Protocol freeze is incomplete: {sorted(missing)}")
+    checkpoint = load_checkpoint(checkpoint_path, config)
+    protocol = load_experiment_protocol(Path(config.experiment_protocol_path))
     expected = {
         "config_hash": config_hash(config),
         "split_sha256": sha256_file(Path(config.split_manifest)),
         "cache_sha256": sha256_file(Path(config.cache_index)),
         "checkpoint_sha256": sha256_file(checkpoint_path),
+        "protocol_sha256": protocol_sha256(Path(config.experiment_protocol_path)),
+        "evaluation_protocol": protocol.protocol_id,
+        "preprocessing_version": config.preprocessing_version,
         "training_threshold": config.threshold,
         "threshold_source": "validation_only",
         "data_kind": "synthetic" if config.execution_mode == "smoke" else "research",
@@ -166,15 +222,100 @@ def verify_freeze(path: Path, checkpoint_path: Path, config: TrainingConfig) -> 
         raise ValueError(
             "Frozen model, threshold, configuration or dataset changed; test execution denied."
         )
-    if freeze.get("threshold") not in config.validation_thresholds:
+    if (
+        not isinstance(freeze["threshold"], (int, float))
+        or not np.isfinite(freeze["threshold"])
+        or freeze["threshold"] not in config.validation_thresholds
+    ):
         raise ValueError("The frozen threshold was not a configured validation candidate.")
-    report_name = freeze.get("validation_report")
+    report_name = freeze["validation_report"]
     if not isinstance(report_name, str):
         raise ValueError("Freeze must reference the actual validation report.")
     report_path = resolve_data_path(path.parent, report_name)
     if sha256_file(report_path) != freeze.get("validation_report_sha256"):
         raise ValueError("The frozen validation evidence changed.")
     report = read_hashed_json(report_path)
-    if not isinstance(report, dict) or report.get("subset") != "validation":
+    if (
+        not isinstance(report, dict)
+        or report.get("subset") != "validation"
+        or report.get("data_kind") != freeze["data_kind"]
+    ):
         raise ValueError("Only actual validation evidence can unlock testing.")
+    if not freeze["git_commit"] or freeze["git_commit"] == "NotRun":
+        raise ValueError("A source commit is required to freeze the testing protocol.")
+    if freeze["threshold_selection_mode"] not in {"search", "fixed_050"}:
+        raise ValueError("Unknown frozen validation threshold selection mode.")
+    from training.experiment_protocol import select_validation_threshold
+
+    threshold_rows = report.get("validation_threshold_search")
+    expected_thresholds = (
+        protocol.model_selection["candidate_thresholds"]
+        if freeze["threshold_selection_mode"] == "search"
+        else [protocol.model_selection["sensitivity_threshold"]]
+    )
+    if not isinstance(threshold_rows, list) or any(
+        not isinstance(row, dict) or set(row) != {"threshold", "validation_patient_dice"}
+        for row in threshold_rows
+    ):
+        raise ValueError("Validation report is missing its threshold-selection evidence.")
+    threshold_scores = {row["threshold"]: row["validation_patient_dice"] for row in threshold_rows}
+    if list(threshold_scores) != expected_thresholds:
+        raise ValueError(
+            "Validation report does not contain the preregistered threshold candidates."
+        )
+    selected_threshold = select_validation_threshold(
+        threshold_scores, protocol, freeze["threshold_selection_mode"]
+    )
+    if selected_threshold != freeze["threshold"]:
+        raise ValueError("Frozen threshold is not the selected validation-only threshold.")
+    selected_report_score = threshold_scores[freeze["threshold"]]
+    if not isinstance(selected_report_score, (int, float)) or not np.isfinite(
+        selected_report_score
+    ):
+        raise ValueError("Selected validation report score is invalid.")
+    metrics_key = (
+        "research_metrics" if freeze["data_kind"] == "research" else "synthetic_smoke_measurements"
+    )
+    selected_metrics = report.get(metrics_key, {})
+    patient_metrics = (
+        selected_metrics.get("patients") if isinstance(selected_metrics, dict) else None
+    )
+    if not isinstance(patient_metrics, dict) or not patient_metrics:
+        raise ValueError("Validation report is missing reconstructed patient-level metrics.")
+    if freeze["data_kind"] == "research":
+        split = load_split(Path(config.split_manifest))
+        if set(patient_metrics) != set(split.validation):
+            raise ValueError(
+                "Validation evidence does not cover the complete frozen patient cohort."
+            )
+    observed_dice = [
+        value.get("dice") for value in patient_metrics.values() if isinstance(value, dict)
+    ]
+    if len(observed_dice) != len(patient_metrics) or any(
+        not isinstance(value, (int, float)) or not np.isfinite(value) or not 0 <= value <= 1
+        for value in observed_dice
+    ):
+        raise ValueError("Validation report contains invalid patient-level Dice values.")
+    selected_score = float(np.mean(observed_dice))
+    if not np.isclose(selected_score, selected_report_score, rtol=0, atol=1e-12):
+        raise ValueError(
+            "Selected validation score does not match reconstructed patient-level Dice."
+        )
+    for key in ("run_id", "architecture", "condition_name", "model_version", "seed", "git_commit"):
+        if freeze[key] != checkpoint.get(key):
+            raise ValueError(f"Protocol freeze {key} does not match the checkpoint.")
+    if freeze["model_weight_sha256"] != checkpoint["model_weight_sha256"]:
+        raise ValueError("Frozen model-weight digest does not match the checkpoint tensor state.")
+    if (
+        report.get("threshold") != freeze["threshold"]
+        or report.get("threshold_selection_mode") != freeze["threshold_selection_mode"]
+        or report.get("run_id") != freeze["run_id"]
+        or report.get("git_commit") != freeze["git_commit"]
+        or report.get("checkpoint_sha256") != freeze["checkpoint_sha256"]
+        or report.get("model_weight_sha256") != freeze["model_weight_sha256"]
+        or report.get("protocol_sha256") != freeze["protocol_sha256"]
+        or report.get("evaluation_protocol") != freeze["evaluation_protocol"]
+        or report.get("data_kind") != freeze["data_kind"]
+    ):
+        raise ValueError("Validation evidence does not match the frozen threshold selection.")
     return freeze

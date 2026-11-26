@@ -59,7 +59,10 @@ def test_compose_has_real_dependencies_health_checks_and_no_unused_redis():
         assert "env_file" not in service
     assert "POSTGRES_PASSWORD" not in services["ml-inference"]["environment"]
     assert "MINIO_ROOT_PASSWORD" not in services["ml-inference"]["environment"]
-    assert services["ml-inference"]["volumes"] == ["./artifacts/models:/models:ro"]
+    assert services["ml-inference"]["volumes"] == [
+        "./artifacts/models:/models:ro",
+        "inference-data:/data/objects",
+    ]
 
 
 def test_all_application_images_are_non_root_and_have_health_checks():
@@ -109,8 +112,8 @@ def test_model_and_http_contract_settings_are_versioned():
     settings = json.loads((ROOT / "services/ml-inference/logging.json").read_text(encoding="utf-8"))
     assert settings["formatters"]["json"]["()"] == "brainseg_inference.logging.JsonFormatter"
     values = dotenv_values(ROOT / ".env.example")
-    assert values["ML_PREPROCESSING_VERSION"] == "flair-v1"
-    assert values["ML_MODEL_SHA256"] == ""
+    assert values["ML_MODEL_MANIFEST_PATH"] == "/models/model-manifest.yaml"
+    assert values["ML_MAX_INFERENCE_BATCH_SIZE"] == "16"
     assert (values["POSTGRES_PASSWORD"] or "").startswith("replace-")
     assert (values["MINIO_ROOT_PASSWORD"] or "").startswith("replace-")
 

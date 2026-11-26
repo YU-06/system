@@ -107,15 +107,15 @@ npm start
 
 推理提供 `GET /health`、`GET /ready`、`GET /models`、`POST /v1/segment`、`POST /v1/evaluate`。仅接受经过类型、大小、解压后大小、维度、仿射矩阵和有限值校验的 NIfTI-1 `.nii/.nii.gz`，用户文件名不用于存储路径。接口错误使用稳定错误码。
 
-若有自行训练并验证的 ONNX 权重，将文件放入被忽略的 `artifacts/models`，在 `.env` 中配置 `ML_MODEL_PATH=/models/model.onnx`、实际 `ML_MODEL_SHA256` 和 `ML_MODEL_VERSION`，然后重建推理容器：
+推理服务仅在部署提供经验证的研究 ONNX 权重和版本化 YAML 清单后才会就绪。把两者放在被忽略的 `artifacts/models`，令 `weightFile` 使用同目录文件名，并在清单中登记实际 SHA-256、模型版本、架构、`flair-v1`、256 输入尺寸、验证集冻结阈值及 `artifactKind: research`。在 `.env` 中设置 `ML_MODEL_MANIFEST_PATH=/models/model-manifest.yaml`，然后重建推理容器。仓库中的 [`model-manifest.example.yaml`](services/ml-inference/model-manifest.example.yaml) 明确标为合成测试产物，不能用于启用研究模型：
 
 ```powershell
 docker compose up -d --force-recreate ml-inference
 ```
 
-模型输入是 float32 `[1,1,256,256]`，输出为同尺寸 logits，不是已 sigmoid 的概率。启动时核对 SHA-256，加载失败保留进程供诊断，不静默使用随机模型。阈值必须来自验证集，不能用测试集调参。
+启动时核对清单与权重 SHA-256，并验证 ONNX 模型元数据里的架构、预处理版本、输入尺寸和阈值。模型输入是 float32 `[N,1,256,256]`，输出为同尺寸 logits，不是已 sigmoid 的概率。未配置模型或加载失败时进程仍可通过 `/health` 诊断，但 `/ready` 返回 503；不静默使用随机模型。阈值必须来自验证集，不能用测试集调参。仅 `artifactKind: research` 可就绪，合成测试权重不会登记成研究权重。
 
-`/v1/segment` 的 multipart 字段为 `file` 和 `slice_index`，返回版本、阈值、哈希、计时、关联 ID 和 256×256 掩膜；`/v1/evaluate` 另接收 `label`，返回明确标记为切片级的指标，**不能替代患者级主指标**。正式患者级三维重建、验证集阈值冻结、配对检验、95% CI 与可追溯论文报表现已实现；真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。禁止把合成 smoke 作为论文结果。
+`POST /v1/segment` 的 multipart 字段为完整 T2-FLAIR NIfTI `file`，返回原空间三维预测对象键、SHA-256、版本、阈值、计时和关联 ID，不含准确性指标。`POST /v1/evaluate` 接收原始 `file`、BraTS `label` 与系统生成的 `predictionObjectKey`，先严格核对形状、方向、spacing、affine、qform/sform 和单位，不匹配时拒绝计算、不静默插值；结果包含患者级与切片宏平均指标。响应和对象 sidecar 会标明 `artifactKind`，合成替身结果不属于真实研究结果。接口契约与稳定错误码见 [推理 API 文档](docs/api/ml-inference.md)，模型清单和就绪策略见 [阶段五 ADR](docs/adr/0004-fastapi-inference-service.md)，实际验收结果见 [阶段五测试报告](docs/test-reports/0005-fastapi-inference-service.md)。阶段四实验控制、配对统计口径与测试冻结规则见 [阶段四实验协议](docs/adr/0003-experiment-protocol.md) 和 [阶段四测试报告](docs/test-reports/0004-experiment-protocol.md)。真实 BraTS 训练、正式测试及相应真实指标尚未执行，仍为 `NotRun`。禁止把合成 smoke 作为论文结果。
 
 ```powershell
 uv run --frozen python -m training validate-config

@@ -9,7 +9,7 @@ COPY services/ml-inference/logging.json /app/logging.json
 COPY ml/training/ ml/training/
 COPY ml/configs/ ml/configs/
 RUN uv sync --frozen --no-dev --no-editable
-RUN useradd --uid 10001 --create-home app
+RUN useradd --uid 10001 --create-home app && mkdir -p /data/objects && chown -R app:app /data
 ENV PATH=/app/.venv/bin:$PATH
 USER 10001
 EXPOSE 8000

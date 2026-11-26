@@ -26,20 +26,10 @@
 
 ## 部署结构
 
-```mermaid
-flowchart LR
-  User[Research Browser] --> Web[Angular / Nginx]
-  Web --> Host[ABP Host]
-  Migrate[One-shot EF Migrator] --> Database[(PostgreSQL 17)]
-  Host --> Database
-  Host --> Storage[MinIO / S3]
-  Host --> Inference[FastAPI / ONNX Runtime CPU]
-  Training[Python Training Protocol] --> Preprocess[Shared flair-v1]
-  Inference --> Preprocess
-```
+实际 Compose 网络、宿主机端口、持久卷和组件通信见[系统与部署 Mermaid 图](../diagrams.md)。基础 Compose 不发布 PostgreSQL 和 FastAPI 推理端口；宿主机调试只通过显式 `compose.dev.yaml` loopback overlay 暴露。此图是目标配置说明，不是部署运行证明。
 
 ## 后果与限制
 
-容器只绑定本机，应用镜像为非 root，真实 `.env`、MRI、权重与证书不进入构建上下文。当前 Compose 使用 HTTP 和开发签名密钥，不是公网生产配置。生产还需 TLS、有限权限对象存储账号、永久签名/加密证书、备份、速率策略和经扫描固定 digest 的镜像。
+应用镜像为非 root，真实 `.env`、MRI、权重与证书不进入构建上下文。当前 Compose 使用 HTTP 和开发密钥，不是公网生产配置。生产还需 TLS、有限权限对象存储账号、永久签名/加密证书、备份、可信代理/速率策略和经扫描固定 digest 的镜像。
 
 本机没有 Docker，不能将 YAML 解析与静态检查当作镜像构建或 PostgreSQL/MinIO 集成测试成功。CI 已设置真实构建、迁移和健康冒烟门禁，首次远程执行结果仍须核验。所有真实训练、GPU 性能、患者级实验指标和配对检验均未执行。

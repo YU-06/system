@@ -18,6 +18,7 @@
 **/playwright-report
 data
 artifacts
+backups
 **/*.nii
 **/*.nii.gz
 **/*.ckpt

@@ -134,8 +134,8 @@ jobs:
           curl --fail http://127.0.0.1:5000/health
           curl --fail http://127.0.0.1:5000/ready
           curl --fail http://127.0.0.1:5000/api/app/system
-          curl --fail http://127.0.0.1:8000/health
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/ready)" = "503"
+          docker compose exec -T backend curl --fail http://ml-inference:8000/health
+          test "$(docker compose exec -T backend curl --silent --output /dev/null --write-out '%{http_code}' http://ml-inference:8000/ready)" = "503"
       - name: Failure diagnostics without environment values
         if: failure()
         run: docker compose logs --no-color backend ml-inference web

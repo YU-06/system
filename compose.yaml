@@ -18,6 +18,12 @@ x-backend-environment: &backend-environment
   MlInference__BaseUrl: http://ml-inference:8000
   MlInference__ApiKey: ${ML_SERVICE_API_KEY:?Run the environment initialization script first}
 
+x-local-logging: &local-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
     image: ${POSTGRES_IMAGE:-postgres:17-alpine}
@@ -27,8 +33,6 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run the environment initialization script first}
       TZ: UTC
       PGTZ: UTC
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -37,6 +41,12 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 256
+    logging: *local-logging
+    networks:
+      - backend-internal
 
   object-storage:
     image: ${MINIO_IMAGE:-brainseg-minio:local}
@@ -58,6 +68,12 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+    cpus: 1.0
+    mem_limit: 768m
+    pids_limit: 256
+    logging: *local-logging
+    networks:
+      - backend-internal
 
   backend-migrate:
     image: brainseg-backend:local
@@ -72,6 +88,12 @@ services:
       postgres:
         condition: service_healthy
     restart: "no"
+    cpus: 1.5
+    mem_limit: 1g
+    pids_limit: 256
+    logging: *local-logging
+    networks:
+      - backend-internal
 
   backend:
     image: brainseg-backend:local
@@ -81,6 +103,8 @@ services:
     environment: *backend-environment
     ports:
       - "127.0.0.1:${BACKEND_PORT:-5000}:8080"
+    volumes:
+      - backend-data:/app/data
     healthcheck:
       test: [CMD, curl, -fsS, http://127.0.0.1:8080/health]
       interval: 10s
@@ -97,6 +121,13 @@ services:
       backend-migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    cpus: 1.5
+    mem_limit: 1g
+    pids_limit: 256
+    logging: *local-logging
+    networks:
+      - frontend
+      - backend-internal
 
   web:
     image: brainseg-web:local
@@ -114,6 +145,12 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 256m
+    pids_limit: 128
+    logging: *local-logging
+    networks:
+      - frontend
 
   ml-inference:
     image: brainseg-inference:local
@@ -133,8 +170,6 @@ services:
     volumes:
       - ./artifacts/models:/models:ro
       - inference-data:/data/objects
-    ports:
-      - "127.0.0.1:${ML_PORT:-8000}:8000"
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
       interval: 10s
@@ -142,8 +177,20 @@ services:
       retries: 12
       start_period: 15s
     restart: unless-stopped
+    cpus: 2.0
+    mem_limit: 4g
+    pids_limit: 256
+    logging: *local-logging
+    networks:
+      - backend-internal
 
 volumes:
   postgres-data:
   object-data:
   inference-data:
+  backend-data:
+
+networks:
+  frontend:
+  backend-internal:
+    internal: true

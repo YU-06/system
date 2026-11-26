@@ -288,7 +288,7 @@ Study 是 Uploaded → Ready → Archived；只有 Ready 且未删除的影像�
 
 ## API 与权限
 
-沿用现有 ABP 自动控制器和统一错误封装。创建与命令返回 200，删除成功返回 204；未认证 401、无权限 403、未找到 404、并发与状态/唯一性冲突 409、无效输入 400、超限 413、推理依赖不可用 503。不要另加绕过 Application Service 的写接口。
+沿用现有 ABP 自动控制器和统一错误封装。OpenAPI JSON 为 `/swagger/v1/swagger.json`，Swagger UI 为 `/swagger`；运行时地址和 FastAPI schema 见 [API/OpenAPI 索引](README.md)。创建与命令返回 200，删除成功返回 204；未认证 401、无权限 403、未找到 404、并发与状态/唯一性冲突 409、无效输入 400、超限 413、推理依赖不可用 503。不要另加绕过 Application Service 的写接口。
 
 | 资源前缀 `/api/app/` | 操作 | 父级读权限 | 写入附加权限 |
 | --- | --- | --- | --- |
@@ -303,6 +303,8 @@ Job 的 Start、Fail、Complete 和进度更新仅由后台 Worker 在服务端�
 写命令必须提交详情接口返回的 ConcurrencyStamp。PUT 和 POST 将其放入 JSON；Study DELETE 使用查询参数 `?concurrencyStamp=...`。服务器先拒绝已过期的客户端戳，再由 EF 的并发令牌拒绝“两个调用同时读到旧版本”的竞争。
 
 列表参数为 skipCount、maxResultCount（1–100）、filter、sorting（单字段及 asc/desc）。默认 creationTime desc，附加 Id 稳定排序。排序白名单：Study 的 creationTime/studyNumber/pseudonym/status；Job 的 creationTime/requestedTime/status/progress；模型的 creationTime/name/semanticVersion/architecture；结果的 creationTime/createdTime/inferenceMilliseconds/tumorAreaPixels；实验的 creationTime/createdTime/experimentName/randomSeed。语义版本字符串排序为字典序，不冒充版本优先级比较。
+
+宿主 API 请求上限为 64 MiB + 128 KiB multipart 开销；全局固定窗口限流为 Kestrel 所见客户端地址每分钟 120 次，满额直接 429、不排队。当前 Host 未配置 Forwarded Headers 信任规则；反向代理部署前必须设置可信代理和客户端 IP 传递，避免所有请求共用代理地址额度，也不能信任任意转发头。生产需由边缘代理增加速率限制和 HTTPS；CORS 默认仅本机工作台来源，不能作为服务端授权。
 
 各列表另支持状态、StudyId、ModelVersionId、架构、启用、JobId 或随机种子的相应筛选。结果 filter 匹配 Job CorrelationId。禁止传任意动态 LINQ 表达式。
 
